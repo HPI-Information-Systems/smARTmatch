@@ -1,0 +1,29 @@
+{% macro score_progress_stack(match, image_weight, extra_classes="") -%}
+    {% set combined_segments = combined_score_segments(match.image_similarity, match.metadata_similarity, image_weight) %}
+    <div class="score-progress-stack{% if extra_classes %} {{ extra_classes }}{% endif %}" aria-label="Score-Übersicht">
+        <div class="score-progress-item score-progress-item-image">
+            <span class="score-progress-label">Bilder: {{ score_percent_short(match.image_similarity) }}</span>
+            <div class="progress match-score-progress score-progress-image" title="Bilder: {{ score_percent_short(match.image_similarity) }}">
+                <div class="progress-bar" style="width: {{ score_width(match.image_similarity) }}%"></div>
+            </div>
+        </div>
+        <div class="score-progress-item score-progress-item-metadata">
+            {% if match.match_scores %}
+                {% set meta_tooltip = "Ähnlichkeit: " ~ score_percent_short(match.match_scores.final_score) ~ ", Konfidenz: " ~ score_percent_short(match.match_scores.confidence_score) %}
+            {% else %}
+                {% set meta_tooltip = "" %}
+            {% endif %}
+            <span class="score-progress-label" {% if meta_tooltip %}title="{{ meta_tooltip }}"{% endif %}>Metadaten: {{ score_percent_short(match.metadata_similarity) }}</span>
+            <div class="progress match-score-progress score-progress-metadata" {% if meta_tooltip %}title="{{ meta_tooltip }}"{% endif %}>
+                <div class="progress-bar" style="width: {{ score_width(match.metadata_similarity) }}%"></div>
+            </div>
+        </div>
+        <div class="score-progress-item score-progress-item-combined">
+            <span class="score-progress-label">Gesamt: {{ score_percent_short(match.final_score) }}</span>
+            <div class="progress match-score-progress score-progress-combined" title="Gesamt: {{ score_percent_short(match.final_score) }}">
+                <div class="progress-bar score-progress-combined-image" style="width: {{ combined_segments.image }}%"></div>
+                <div class="progress-bar score-progress-combined-metadata" style="width: {{ combined_segments.metadata }}%"></div>
+            </div>
+        </div>
+    </div>
+{%- endmacro %}

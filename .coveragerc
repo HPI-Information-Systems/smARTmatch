@@ -1,0 +1,9 @@
+[run]
+branch = True
+source = matching_pipeline
+
+[report]
+exclude_also =
+    if __name__ == ["']__main__["']:
+fail_under = 100
+show_missing = True

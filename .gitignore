@@ -1,0 +1,42 @@
+# Python and test artifacts
+.venv/
+venv/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors, agent state, and operating systems
+.DS_Store
+*~
+.pi/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+!.env.docker
+
+# Generated runtime state
+cache/
+local/
+logs/
+transfer/
+backups/
+runs/
+hf_cache/
+
+# PostgreSQL and downloaded image state
+db/pg-data/
+db/images/*
+!db/images/pipeline_test_set/
+!db/images/pipeline_test_set/*.jpg
+
+# Mutable pipeline work files
+matching_pipeline/metadata_extraction/descriptions*.jsonl
+matching_pipeline/metadata_matching/similarity_functions/artist/common_artists.csv
+
+# Scraper captures and downloads
+scrapers/lostart/data/
+scrapers/sothebys/data/

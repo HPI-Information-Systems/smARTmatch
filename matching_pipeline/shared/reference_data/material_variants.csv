@@ -1,0 +1,382 @@
+dict_material_name;material_raw_data
+Unbekannt;unbekannt
+Unbekannt;unknown
+Tierprodukt;tierprodukt
+Tierprodukt;animal product
+Hartmaterial;hartmaterial
+Hartmaterial;hard material
+Schildpatt;schildpatt
+Schildpatt;tortoiseshell
+Muschel;muschel
+Muschel;shell
+Elfenbein;elfenbein
+Elfenbein;elfenbeinmasse
+Elfenbein;ivory
+Perlmutt;perlmutt
+Perlmutt;mother of pearl
+Perlen;perlen
+Perlen;glasperlen
+Perlen;metallperlen
+Perlen;pearls
+Leder;leder
+Leder;lederband
+Leder;ledereinband
+Leder;leather
+Pergament;pergament
+Pergament;parchment
+Vellum;vellum
+Vellum;vellum
+Wachs;wachs
+Wachs;wax
+Tiertextil;tiertextil
+Tiertextil;animal textile
+Seide;seide
+Seide;silk
+Wolle;wolle
+Wolle;wool
+Mineral;mineral
+Mineral;mineral
+Kristall;kristall
+Kristall;crystal
+Bergkristall;bergkristall
+Bergkristall;rock crystal
+Jade;jade
+Karneol;karneol
+Karneol;carnelian
+Aragonit;aragonit
+Aragonit;aragonite
+Stein;stein
+Stein;kunststein
+Stein;stone
+Granit;granit
+Granit;granite
+Speckstein;speckstein
+Speckstein;soapstone
+Marmor;marmor
+Marmor;marble
+Kalkstein;kalkstein
+Kalkstein;limestone
+Kalk;kalk
+Kalk;lime
+Kreide;kreide
+Kreide;chalk
+Sandstein;sandstein
+Sandstein;sandstone
+Schiefer;schiefer
+Schiefer;slate
+Steinsplitter;steinsplitter
+Steinsplitter;stone chips
+Serpentin;serpentin
+Serpentin;serpentine
+Erdmaterial;erdmaterial
+Erdmaterial;earth material
+Ton;ton
+Ton;clay
+Keramik;keramik
+Keramik;ceramic
+Steingut;steingut
+Steingut;earthenware
+Terrakotta;terrakotta
+Terrakotta;terracotta
+Porzellan;porzellan
+Porzellan;porcelain
+Biskuitporzellan;biskuitporzellan
+Biskuitporzellan;biskuit
+Biskuitporzellan;biscuit porcelain
+Eierschalenporzellan;eierschalenporzellan
+Eierschalenporzellan;eggshell porcelain
+Fayence;fayence
+Fayence;faience
+Gips;gips
+Gips;gipsrelief
+Gips;gypsum
+Putz;putz
+Putz;plaster
+Alabaster;alabaster
+Stuck;stuck
+Stuck;stucco
+Stuckmarmor;stuckmarmor
+Stuckmarmor;scagliola
+Glas;glas
+Glas;glass
+Emaille;email
+Emaille;emaille
+Emaille;enamel
+Rubinglas;rubinglas
+Rubinglas;ruby glass
+Plexiglas;plexiglas
+Plexiglas;plexiglass
+Acrylglas;acrylglas
+Acrylglas;acrylic glass
+Metall;metall
+Metall;mgalvanoetall
+Metall;metal
+Reinmetall;reinmetall
+Reinmetall;pure metal
+Gold;gold
+Gold;golddruck
+Gold;vergoldet
+Silber;silber
+Silber;versilbert
+Silber;silver
+Eisen;eisen
+Eisen;iron
+Zinn;zinn
+Zinn;tin
+Kupfer;kupfer
+Kupfer;kupf
+Kupfer;copper
+Blei;blei
+Blei;lead
+Zink;zink
+Zink;zinc
+Legierung;legierung
+Legierung;alloy
+Bronze;bronze
+Bronze;bronze
+Zinkbronze;zinkbronze
+Zinkbronze;zinc bronze
+Stahl;stahl
+Stahl;edelstahl
+Stahl;steel
+Messing;messing
+Messing;brass
+Messing;gelbguss
+Messing;messingblech
+Messing;gelbguß
+Blech;blech
+Blech;sheet metal
+Pflanzenmaterial;pflanzenmaterial
+Pflanzenmaterial;plant material
+Pflanzentextil;pflanzentextil
+Pflanzentextil;textil
+Pflanzentextil;plant textile
+Jute;jute
+Leinen;leinen
+Leinen;linen
+Leinwand;leinwand
+Leinwand;lwd
+Leinwand;lwd.
+Leinwand;lw
+Leinwand;l.
+Leinwand;toile
+Leinwand;toile ovales
+Leinwand;canvas
+Sackleinen;sackleinen
+Sackleinen;burlap
+Samt;samt
+Samt;velvet
+Baumwolle;baumwolle
+Baumwolle;cotton
+Molino;molino
+Rupfen;rupfen
+Rupfen;coarse linen
+Papiermaterial;papiermaterial
+Papiermaterial;paper material
+Papier;papier
+Papier;paper
+Pergamentpapier;pergamentpapier
+Pergamentpapier;parchment paper
+Fotopapier;fotopapier
+Fotopapier;photo paper
+Bütten;bütten
+Bütten;laid paper
+Pappe;pappe
+Pappe;malpappe
+Pappe;cardboard
+Pappmaché;pappmaché
+Pappmaché;papier-mâché
+Pappmaché;papiermaché
+Pappmaché;papier mache
+Karton;karton
+Karton;krt
+Karton;krt.
+Karton;malkarton
+Karton;pappkarton
+Karton;büttenkarton
+Karton;cardboard
+Werkdruckpapier;werkdruckpapier
+Werkdruckpapier;printing paper
+Japanpapier;japanpapier
+Japanpapier;japanese paper
+Velin;velin
+Velin;vellum paper
+Velin;vellum
+Harz;harz
+Harz;resin
+Bernstein;bernstein
+Bernstein;amber
+Synthetikharz;synthetikharz
+Synthetikharz;synthetic resin
+Hartfaser;hartfaser
+Hartfaser;holzfaser
+Hartfaser;hardboard/wood fiber
+Hartfaserplatte;hartfaserplatte
+Hartfaserplatte;faserplatte
+Hartfaserplatte;hardboard
+Unalit;unalit
+Pavatex;pavatex
+Masonite;masonite
+Holz;holz
+Holz;wood
+Platte;platte
+Platte;malplatte
+Platte;malerplatte
+Platte;holzplatte
+Platte;pl
+Platte;pl.
+Platte;panel board
+Platte;board
+Panel;panel
+Tafel;holztafel
+Tafel;tafel
+Tafel;wooden panel
+Nadelholz;nadelholz
+Nadelholz;softwood
+Kiefer;kiefer
+Kiefer;kieferholz
+Kiefer;pine
+Tanne;tanne
+Tanne;tannenholz
+Tanne;fir
+Fichte;fichte
+Fichte;fichtenholz
+Fichte;spruce
+Eibe;eibe
+Eibe;eibenholz
+Eibe;yew
+Zeder;zeder
+Zeder;zedernholz
+Zeder;cedar
+Laubholz;laubholz
+Laubholz;laub
+Laubholz;hardwood
+Buchsbaum;buchsbaum
+Buchsbaum;buchsbaumholz
+Buchsbaum;buchsholz
+Buchsbaum;boxwood
+Nussbaum;nussbaum
+Nussbaum;nussbaumholz
+Nussbaum;walnut
+Kirschbaumholz;kirschbaumholz
+Kirschbaumholz;kirschbaum
+Kirschbaumholz;cherry wood
+Ahornholz;ahornholz
+Ahornholz;ahorn
+Ahornholz;maple wood
+Pappelholz;pappel
+Pappelholz;pappelholz
+Pappelholz;poplar wood
+Lindenholz;lindenholz
+Lindenholz;linde
+Lindenholz;linden wood
+Lindenholz;limewood
+Birke;sirke
+Birke;birkenholz
+Birke;birch
+Eichenholz;eichenholz
+Eichenholz;eiche
+Eichenholz;oak wood
+Mahagoni;mahagoni
+Mahagoni;mahagoniholz
+Mahagoni;mahogany
+Unbekannt;inconnu
+Tierprodukt;produit animal
+Hartmaterial;matériau dur
+Schildpatt;écaille de tortue
+Muschel;coquillage
+Elfenbein;ivoire
+Perlmutt;nacre
+Perlen;perles
+Leder;cuir
+Pergament;parchemin
+Vellum;vélin
+Wachs;cire
+Tiertextil;textile animal
+Seide;soie
+Wolle;laine
+Mineral;minéral
+Kristall;cristal
+Bergkristall;cristal de roche
+Karneol;cornaline
+Stein;pierre
+Speckstein;stéatite
+Marmor;marbre
+Kalkstein;calcaire
+Kalk;chaux
+Kreide;craie
+Sandstein;grès
+Schiefer;ardoise
+Steinsplitter;éclats de pierre
+Erdmaterial;matériau terreux
+Ton;argile
+Keramik;céramique
+Steingut;faïence fine
+Terrakotta;terre cuite
+Porzellan;porcelaine
+Biskuitporzellan;biscuit de porcelaine
+Eierschalenporzellan;porcelaine coquille d'œuf
+Fayence;faïence
+Gips;gypse
+Putz;plâtre
+Alabaster;albâtre
+Stuck;stuc
+Glas;verre
+Emaille;émail
+Rubinglas;verre rubis
+Acrylglas;verre acrylique
+Metall;métal
+Reinmetall;métal pur
+Gold;or
+Silber;argent
+Eisen;fer
+Zinn;étain
+Kupfer;cuivre
+Blei;plomb
+Legierung;alliage
+Zinkbronze;bronze au zinc
+Stahl;acier
+Messing;laiton
+Blech;tôle
+Pflanzenmaterial;matériau végétal
+Pflanzentextil;textile végétal
+Leinen;lin
+Sackleinen;toile de jute
+Samt;velours
+Baumwolle;coton
+Rupfen;toile grossière
+Papiermaterial;matériau papier
+Pergamentpapier;papier parchemin
+Fotopapier;papier photo
+Bütten;papier vergé
+Pappe;carton
+Pappmaché;papier mâché
+Karton;carton
+Werkdruckpapier;papier d'impression
+Japanpapier;papier japonais
+Velin;papier vélin
+Harz;résine
+Bernstein;ambre
+Synthetikharz;résine synthétique
+Hartfaser;panneau de fibres dur
+Hartfaserplatte;panneau dur
+Holz;bois
+Platte;panneau
+Panel;panneau
+Tafel;panneau de bois
+Nadelholz;bois résineux
+Kiefer;pin
+Tanne;sapin
+Fichte;épicéa
+Eibe;if
+Zeder;cèdre
+Laubholz;bois feuillu
+Buchsbaum;buis
+Nussbaum;noyer
+Kirschbaumholz;bois de cerisier
+Ahornholz;bois d'érable
+Pappelholz;bois de peuplier
+Lindenholz;bois de tilleul
+Birke;bouleau
+Eichenholz;bois de chêne
+Mahagoni;acajou

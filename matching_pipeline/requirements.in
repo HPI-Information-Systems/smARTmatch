@@ -1,0 +1,16 @@
+numpy==2.2.6
+pyarrow==22.0.0
+torch==2.9.1
+torchaudio==2.9.1
+torchvision==0.24.1
+transformers==4.57.6
+Pillow==11.0.0
+joblib==1.5.3
+matplotlib==3.11.1
+kornia==0.8.2
+opencv-python-headless==4.13.0.92
+scikit-learn==1.9.0
+psycopg[binary]==3.2.2
+rapidfuzz==3.14.1
+scipy==1.15.3
+vllm==0.14.1

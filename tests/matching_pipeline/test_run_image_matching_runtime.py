@@ -1,0 +1,233 @@
+"""Offline orchestration tests for the LightGlue matching runner."""
+
+from __future__ import annotations
+
+import unittest
+from contextlib import ExitStack
+from pathlib import Path
+from unittest import mock
+
+from matching_pipeline.image_matching import run_image_matching as runtime
+
+
+def _summary(rows=1, auctions=1):
+    return {
+        "part_count": 1 if rows else 0,
+        "row_count": rows,
+        "auction_file_count": auctions,
+    }
+
+
+def _candidate(file_id, path, score):
+    return {
+        "lost_file_id": file_id,
+        "lost_file_path": path,
+        "blocking_score": score,
+    }
+
+
+class MatchingRuntimeTests(unittest.TestCase):
+    def test_empty_artifacts_skip_models(self) -> None:
+        cases = [(_summary(0, 1), Path("unused.csv")), (_summary(1, 0), None)]
+        for summary, output in cases:
+            with (
+                self.subTest(summary=summary),
+                mock.patch.object(
+                    runtime, "_candidate_artifact_summary", return_value=summary
+                ),
+                mock.patch.object(runtime, "FeatureExtractor") as extractor,
+                mock.patch.object(
+                    runtime, "env_cache_dir", return_value=Path("cache")
+                ),
+                mock.patch("builtins.print") as printed,
+            ):
+                result = runtime.run_image_matching(results_csv=output)
+            extractor.assert_not_called()
+            printed.assert_called_once_with("Found 0 matches")
+            self.assertEqual(result.processed_auction_file_ids, [])
+            self.assertEqual(result.accepted_matches, [])
+            self.assertEqual(result.pairs_processed, 0)
+
+    def test_invalid_feature_directory_type_is_rejected(self) -> None:
+        with self.assertRaises(AssertionError):
+            runtime.run_image_matching(feats_dir="not-a-path")
+
+    def test_success_rejection_pair_failure_and_image_failure(self) -> None:
+        extractor = mock.Mock(device="cpu")
+        matcher = mock.Mock(device="cpu")
+        classifier = mock.Mock()
+        auction_features = {"keypoints": [[1, 2]]}
+        lost_features = {"keypoints": [[3, 4]]}
+
+        def extract(path):
+            if path.name == "auction-bad.jpg":
+                raise RuntimeError("unreadable auction")
+            return auction_features
+
+        def load_or_extract(path, image_path, save_missing_feats=True):
+            if image_path.name == "lost-bad.jpg":
+                raise RuntimeError("unreadable pair")
+            return lost_features
+
+        extractor.extract.side_effect = extract
+        extractor.load_or_extract.side_effect = load_or_extract
+        matcher.match.side_effect = [{"scores": [0.9]}, {"scores": [0.1]}]
+        classifier.classify_matches.side_effect = [(True, 0.8), (False, 0.2)]
+        items = [
+            {
+                "auction_file_id": "auction-1",
+                "auction_file_path": "auction.jpg",
+                "match_candidates": [
+                    _candidate("accepted", "lost-ok.jpg", "0.7"),
+                    _candidate("rejected", "lost-no.jpg", 0.4),
+                    _candidate("failed", "lost-bad.jpg", 0.3),
+                ],
+            },
+            {
+                "auction_file_id": "auction-2",
+                "auction_file_path": "auction-bad.jpg",
+                "match_candidates": [_candidate("unused", "unused.jpg", 0.1)],
+            },
+        ]
+        output = Path("relative-results.csv")
+        cache = Path("relative-cache")
+        payload = {"match_count": 1}
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.object(
+                    runtime,
+                    "_candidate_artifact_summary",
+                    return_value=_summary(4, 2),
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(
+                    runtime,
+                    "load_auction_to_lost_rankings_with_paths",
+                    return_value=iter(items),
+                )
+            )
+            stack.enter_context(
+                mock.patch.object(runtime, "FeatureExtractor", return_value=extractor)
+            )
+            stack.enter_context(
+                mock.patch.object(runtime, "FeatureMatcher", return_value=matcher)
+            )
+            stack.enter_context(
+                mock.patch.object(runtime, "MatchClassifier", return_value=classifier)
+            )
+            build = stack.enter_context(
+                mock.patch.object(
+                    runtime,
+                    "build_keypoint_match_visualization",
+                    return_value=payload,
+                )
+            )
+            write_results = stack.enter_context(
+                mock.patch.object(runtime, "_write_results")
+            )
+            printed = stack.enter_context(mock.patch("builtins.print"))
+            result = runtime.run_image_matching(
+                results_csv=output,
+                feats_dir=cache,
+                save_missing_feats=False,
+            )
+
+        self.assertEqual(
+            result.processed_auction_file_ids, ["auction-1", "auction-2"]
+        )
+        self.assertEqual(
+            (result.pairs_processed, result.failed_images, result.failed_pairs),
+            (3, 1, 1),
+        )
+        self.assertEqual(len(result.accepted_matches), 1)
+        accepted = result.accepted_matches[0]
+        self.assertEqual(
+            (accepted.auction_file_id, accepted.lost_file_id),
+            ("auction-1", "accepted"),
+        )
+        self.assertEqual((accepted.confidence, accepted.blocking_score), (0.8, 0.7))
+        self.assertIs(accepted.keypoint_matches, payload)
+        self.assertEqual(extractor.load_or_extract.call_count, 3)
+        first_call = extractor.load_or_extract.call_args_list[0]
+        self.assertEqual(first_call.args[0], cache / "accepted.pt")
+        self.assertFalse(first_call.kwargs["save_missing_feats"])
+        build.assert_called_once()
+        write_results.assert_called_once_with(output, result.accepted_matches)
+        printed.assert_any_call("Found 1 matches")
+
+    def test_cache_disabled_extracts_lost_image(self) -> None:
+        extractor = mock.Mock(device="cpu")
+        matcher = mock.Mock(device="cpu", match=mock.Mock(return_value={"scores": []}))
+        classifier = mock.Mock()
+        classifier.classify_matches.return_value = (False, 0.25)
+        extractor.extract.side_effect = [
+            {"auction": 1},
+            {"lost": 1},
+            {"empty": 1},
+        ]
+        items = [
+            {
+                "auction_file_id": "one",
+                "auction_file_path": "auction.jpg",
+                "match_candidates": [_candidate("lost", "lost.jpg", 0.1)],
+            },
+            {
+                "auction_file_id": "empty",
+                "auction_file_path": "empty.jpg",
+                "match_candidates": [],
+            },
+        ]
+        with (
+            mock.patch.object(
+                runtime, "_candidate_artifact_summary", return_value=_summary(1, 2)
+            ),
+            mock.patch.object(
+                runtime,
+                "load_auction_to_lost_rankings_with_paths",
+                return_value=iter(items),
+            ),
+            mock.patch.object(runtime, "FeatureExtractor", return_value=extractor),
+            mock.patch.object(runtime, "FeatureMatcher", return_value=matcher),
+            mock.patch.object(runtime, "MatchClassifier", return_value=classifier),
+            mock.patch.object(runtime, "_write_results") as write_results,
+            mock.patch("builtins.print"),
+        ):
+            result = runtime.run_image_matching(feats_dir=None)
+
+        self.assertEqual(result.pairs_processed, 1)
+        self.assertEqual(result.accepted_matches, [])
+        extractor.load_or_extract.assert_not_called()
+        self.assertEqual(extractor.extract.call_count, 3)
+        write_results.assert_called_once_with(None, [])
+
+    def test_only_empty_group_reports_no_average(self) -> None:
+        extractor = mock.Mock(device="cpu")
+        matcher = mock.Mock(device="cpu")
+        item = {
+            "auction_file_id": "empty",
+            "auction_file_path": "empty.jpg",
+            "match_candidates": [],
+        }
+        with (
+            mock.patch.object(
+                runtime, "_candidate_artifact_summary", return_value=_summary()
+            ),
+            mock.patch.object(
+                runtime,
+                "load_auction_to_lost_rankings_with_paths",
+                return_value=iter([item]),
+            ),
+            mock.patch.object(runtime, "FeatureExtractor", return_value=extractor),
+            mock.patch.object(runtime, "FeatureMatcher", return_value=matcher),
+            mock.patch.object(runtime, "MatchClassifier"),
+            mock.patch.object(runtime, "_write_results"),
+            mock.patch("builtins.print"),
+        ):
+            result = runtime.run_image_matching(feats_dir=None)
+        self.assertEqual(result.pairs_processed, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="de">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>smARTmatch: Suche nach verlorenem Kustbesitz</title>
+        <meta name="description" content="Automatische Suche nach verlorener Kunst">
+        <meta name="keywords" content="Kunst, Gemälde, HPI, SPSG">
+        <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" sizes="any">
+        <script src={{ url_for('static', filename='htmx.min.js') }}></script>
+        <script src={{ url_for('static', filename='bootstrap.bundle.min.js') }}></script>
+        <script src="{{ url_for('static', filename='frontend.js') }}" defer></script>
+        <link rel="stylesheet"
+              href="{{ url_for('static', filename='bootstrap.min.css') }}" />
+        <link rel="stylesheet"
+              href="{{ url_for('static', filename='bootstrap-icons.min.css') }}" />
+        <link rel="stylesheet"
+              href="{{ url_for('static', filename='frontend.css') }}" />
+    </head>
+    <body class="d-flex flex-column {% if request.endpoint == 'home' %}is-home-page{% else %}is-sub-page{% endif %} {% if request.endpoint == 'match' %}is-match-page{% endif %}">
+        <header class="site-header py-2 bg-light">
+            {% set match_list_url = url_for('match_list', rating='unrated', sort='similarity', bookmarked='false', image_weight=request.args.get('image_weight', 50)) %}
+            {% set primary_nav_items = [
+                {'label': 'Matches', 'icon': 'bi-list-ul', 'href': match_list_url, 'active': request.endpoint in ['match_list', 'match', 'match_redirect']},
+                {'label': 'Statistiken', 'icon': 'bi-bar-chart-line', 'href': url_for('stats_dashboard'), 'active': request.endpoint == 'stats_dashboard'}
+            ] %}
+            <div class="frontend-content-container header-shell">
+                <input class="mobile-nav-state visually-hidden"
+                       type="checkbox"
+                       id="primary-mobile-nav-state"
+                       aria-label="Hauptnavigation ein- oder ausblenden" />
+                <div class="row g-2 align-items-center header-main-row">
+                    <div class="col-auto">
+                        <a href="{{ url_for('home') }}" class="header-logo-link">
+                            <img src="{{ url_for('static', filename='logo_smartmatch.png') }}"
+                                 alt="smARTmatch"
+                                 width=""
+                                 height="36"
+                                 class="d-inline-block align-text-top" />
+                        </a>
+                    </div>
+                    <div class="col-auto d-none d-lg-block">
+                        <nav class="desktop-main-nav" aria-label="Hauptnavigation">
+                            {% for item in primary_nav_items %}
+                                <a class="main-nav-link {% if item.active %}active{% endif %}"
+                                   href="{{ item.href }}"
+                                   {% if item.active %}aria-current="page"{% endif %}>{{ item.label }}</a>
+                            {% endfor %}
+                        </nav>
+                    </div>
+                    <div class="col header-search-col">
+                        <form class="header-search-form w-100"
+                              role="search"
+                              action="{{ url_for('match_list') }}"
+                              hx-get="{{ url_for('match_list') }}"
+                              hx-trigger="input changed delay:250ms from:#search, submit"
+                              hx-target="#frontend-main-content"
+                              hx-select="#frontend-main-content"
+                              hx-swap="outerHTML"
+                              hx-push-url="true"
+                              hx-sync="this:replace">
+                            <div class="input-group header-search-group">
+                                <input class="form-control header-search-input"
+                                       type="search"
+                                       id="search"
+                                       name="search"
+                                       value="{{ request.args.get('search', '') }}"
+                                       placeholder="Werk- oder Künstlernamen eingeben..."
+                                       aria-label="Suche" />
+                                <button class="btn header-search-button d-inline-flex align-items-center justify-content-center"
+                                        type="submit"
+                                        aria-label="Suche"
+                                        title="Suche">
+                                    <i class="bi bi-search" aria-hidden="true"></i>
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                    <div class="col-auto d-lg-none">
+                        <label class="mobile-nav-toggle"
+                               for="primary-mobile-nav-state"
+                               aria-controls="primary-mobile-nav"
+                               role="button">
+                            <span class="mobile-nav-toggle-bars" aria-hidden="true">
+                                <span></span>
+                                <span></span>
+                                <span></span>
+                            </span>
+                            <span class="visually-hidden">Navigation öffnen oder schließen</span>
+                        </label>
+                    </div>
+                </div>
+                <nav id="primary-mobile-nav"
+                     class="mobile-main-nav d-lg-none"
+                     aria-label="Hauptnavigation">
+                    <div class="mobile-main-nav-panel">
+                        {% for item in primary_nav_items %}
+                            <a class="mobile-main-nav-link {% if item.active %}active{% endif %}"
+                               href="{{ item.href }}"
+                               {% if item.active %}aria-current="page"{% endif %}>
+                                <span><i class="bi {{ item.icon }} me-2" aria-hidden="true"></i>{{ item.label }}</span>
+                            </a>
+                        {% endfor %}
+                    </div>
+                </nav>
+            </div>
+        </header>
+        <main class="flex-fill overflow-hidden">
+            <div id="frontend-main-content" class="frontend-content-container h-100">
+                {% block content %}
+                {% endblock content %}
+            </div>
+        </main>
+        <footer class="frontend-footer py-3 bg-light">
+            <div class="frontend-content-container">
+                <div class="d-flex justify-content-center align-items-center gap-4">
+                    <a href="https://www.hpi.de/" aria-label="HPI">
+                        <img src="{{ url_for('static', filename='logo_hpi.png') }}"
+                             alt="HPI"
+                             width=""
+                             height="72"
+                             class="footer-logo" />
+                    </a>
+                    <a href="https://www.spsg.de/" aria-label="SPSG">
+                        <img src="{{ url_for('static', filename='logo_spsg.svg') }}"
+                             alt="SPSG"
+                             width=""
+                             height="72"
+                             class="footer-logo" />
+                    </a>
+                </div>
+            </div>
+        </footer>
+    </body>
+</html>

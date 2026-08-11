@@ -1,0 +1,28 @@
+# Scraper, dashboard, frontend, operations, and development dependencies.
+beautifulsoup4==4.14.2
+playwright==1.62.0
+lxml==6.0.2
+requests==2.32.5
+psycopg[binary]==3.2.2
+sqlalchemy==2.0.36
+python-dotenv==1.0.1
+pyyaml==6.0.3
+flask==3.1.0
+waitress==3.0.2
+pillow==11.0.0
+
+# Metadata utilities and offline tests.
+rapidfuzz==3.14.1
+numpy==2.2.6
+scipy==1.15.3
+matplotlib==3.10.6
+pyarrow==22.0.0
+pytest==8.4.2
+
+# Development tooling.
+black==25.11.0
+black[jupyter]==25.11.0
+coverage==7.13.4
+flake8==7.3.0
+isort==7.0.0
+pre-commit==4.4.0

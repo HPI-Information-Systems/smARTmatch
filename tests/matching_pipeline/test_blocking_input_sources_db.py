@@ -1,0 +1,207 @@
+"""Offline unit coverage for blocking database input helpers."""
+
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from _blocking_test_support import Connection, Cursor
+from matching_pipeline.image_blocking import input_sources
+from matching_pipeline.image_blocking.config import AUCTION_ROLE, LOST_ROLE
+from matching_pipeline.image_blocking.input_sources import ImageFileRow
+
+
+class InputSourceDatabaseTests(unittest.TestCase):
+    def test_db_presence_and_schema_checks(self) -> None:
+        for value in (True, False):
+            conn = Connection([Cursor(one=(value,))])
+            with mock.patch.object(input_sources, "connect_db", return_value=conn):
+                self.assertIs(
+                    input_sources.has_unprocessed_auction_image_file_rows(), value
+                )
+            self.assertIn("SELECT EXISTS", conn.used[0].executions[0][0])
+
+        input_sources._require_image_file_path_column(
+            Connection([Cursor(one=(True,))])
+        )
+        with self.assertRaisesRegex(RuntimeError, "image_file.file_path is required"):
+            input_sources._require_image_file_path_column(
+                Connection([Cursor(one=(False,))])
+            )
+
+    def test_load_db_rows_coordinates_queries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            conn = Connection(
+                [
+                    Cursor(one=(True,)),
+                    Cursor(rows=[("lost", "lost.jpg")]),
+                    Cursor(rows=[("auction", "auction.jpg")]),
+                ]
+            )
+            with mock.patch.object(
+                input_sources, "connect_db", return_value=conn
+            ), mock.patch.object(input_sources, "default_image_root", return_value=root):
+                lost, auction = input_sources.load_db_image_file_rows(
+                    lost_limit=2,
+                    auction_limit=3,
+                    include_processed_auction_images=True,
+                    validate_files=False,
+                )
+
+            self.assertEqual(lost, [ImageFileRow("lost", root / "lost.jpg")])
+            self.assertEqual(auction, [ImageFileRow("auction", root / "auction.jpg")])
+            self.assertEqual(conn.used[1].executions[0][1], (2,))
+            self.assertEqual(conn.used[2].executions[0][1], (3,))
+            self.assertIn("WITH selected_auction_artwork", conn.used[2].executions[0][0])
+
+    def test_fetch_rows_limits_resolution_and_bad_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            image_root = Path(tmp).resolve()
+            existing = image_root / "exists.jpg"
+            existing.write_bytes(b"x")
+
+            with mock.patch.object(
+                input_sources, "default_image_root", return_value=image_root
+            ):
+                rows = input_sources._fetch_db_rows(
+                    Connection([Cursor(rows=[("id", "exists.jpg")])]),
+                    LOST_ROLE,
+                    None,
+                    False,
+                    True,
+                )
+                self.assertEqual(rows[0].file_path, existing)
+
+                with self.assertRaisesRegex(ValueError, "limits must be positive"):
+                    input_sources._fetch_db_rows(
+                        Connection([]), LOST_ROLE, 0, False, False
+                    )
+                with self.assertRaisesRegex(ValueError, "Missing image_file.file_path"):
+                    input_sources._fetch_db_rows(
+                        Connection([Cursor(rows=[("id", None)])]),
+                        LOST_ROLE,
+                        None,
+                        False,
+                        False,
+                    )
+                with self.assertRaisesRegex(FileNotFoundError, "Image file not found"):
+                    input_sources._fetch_db_rows(
+                        Connection([Cursor(rows=[("id", "gone.jpg")])]),
+                        LOST_ROLE,
+                        None,
+                        False,
+                        True,
+                    )
+
+    def test_query_variants_and_invalid_role(self) -> None:
+        lost = input_sources._db_query(LOST_ROLE, False)
+        self.assertIn("lost_artwork_image_file", lost)
+
+        unprocessed = input_sources._db_query(AUCTION_ROLE, False)
+        processed = input_sources._db_query(AUCTION_ROLE, True)
+        self.assertIn("is_image_matching_processed = false", unprocessed)
+        self.assertNotIn("is_image_matching_processed = false", processed)
+
+        limited_unprocessed = input_sources._auction_image_file_query(
+            False, use_auction_artwork_limit=True
+        )
+        limited_processed = input_sources._auction_image_file_query(
+            True, use_auction_artwork_limit=True
+        )
+        self.assertIn("WITH selected_auction_artwork", limited_unprocessed)
+        self.assertIn("AND aaif.is_image_matching_processed", limited_unprocessed)
+        self.assertNotIn("is_image_matching_processed", limited_processed)
+
+        with self.assertRaisesRegex(ValueError, "Unsupported role"):
+            input_sources._db_query("invalid", False)
+
+    def test_db_path_validation_and_absolute_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            absolute = root / "absolute.jpg"
+            absolute.write_bytes(b"x")
+            self.assertEqual(
+                input_sources._db_image_file_path(
+                    root,
+                    image_file_id="1",
+                    raw_file_path=f"  {absolute}  ",
+                    validate_files=True,
+                ),
+                absolute,
+            )
+            self.assertEqual(
+                input_sources._resolve_db_file_path(root, absolute, False), absolute
+            )
+            with self.assertRaisesRegex(ValueError, "Missing image_file.file_path"):
+                input_sources._db_image_file_path(
+                    root,
+                    image_file_id="1",
+                    raw_file_path=" ",
+                    validate_files=False,
+                )
+            with self.assertRaisesRegex(FileNotFoundError, "Image file not found"):
+                input_sources._db_image_file_path(
+                    root,
+                    image_file_id="1",
+                    raw_file_path=root / "missing.jpg",
+                    validate_files=True,
+                )
+
+    def test_relative_db_candidates_cover_order_fallback_and_deduplication(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = Path(tmp).resolve()
+            repo = outer / "repo"
+            image_root = repo / "db" / "images"
+            image_root.mkdir(parents=True)
+            repo_file = repo / "db" / "images" / "repo.jpg"
+            repo_file.write_bytes(b"x")
+            image_file = image_root / "plain.jpg"
+            image_file.write_bytes(b"x")
+
+            with mock.patch.object(input_sources, "repo_root", return_value=repo):
+                prefixed = input_sources._db_file_path_candidates(
+                    image_root, Path("db/images/repo.jpg")
+                )
+                self.assertEqual(prefixed[0], repo_file)
+                self.assertEqual(
+                    input_sources._resolve_db_file_path(
+                        image_root, "db/images/repo.jpg", True
+                    ),
+                    repo_file,
+                )
+                self.assertEqual(
+                    input_sources._resolve_db_file_path(image_root, "plain.jpg", True),
+                    image_file,
+                )
+                fallback = input_sources._resolve_db_file_path(
+                    image_root, "not-there.jpg", False
+                )
+                self.assertEqual(fallback, image_root / "not-there.jpg")
+
+                self.assertTrue(
+                    input_sources._path_starts_with(
+                        Path("db/images/a.jpg"), Path("db/images")
+                    )
+                )
+                self.assertFalse(
+                    input_sources._path_starts_with(Path("other/a.jpg"), Path("db"))
+                )
+                self.assertEqual(
+                    input_sources._unique_paths([image_root, image_root / "."]),
+                    [image_root],
+                )
+
+            outside_root = outer / "outside"
+            outside_root.mkdir()
+            with mock.patch.object(input_sources, "repo_root", return_value=repo):
+                outside_candidates = input_sources._db_file_path_candidates(
+                    outside_root, Path("relative.jpg")
+                )
+            self.assertEqual(outside_candidates[0], outside_root / "relative.jpg")
+
+
+if __name__ == "__main__":
+    unittest.main()

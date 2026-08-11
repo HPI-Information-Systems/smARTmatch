@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>smARTmatch &mdash; Scraper Dashboard</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+  <header>
+    <h1>smARTmatch</h1>
+    <p class="subtitle">Scraper Dashboard</p>
+  </header>
+
+  <main>
+
+    <!-- Global actions -->
+    <section class="actions-bar">
+      <button id="btn-scrape-all" class="btn btn-primary" onclick="scrapeAll()">
+        Run All Scrapers
+      </button>
+      <button class="btn btn-secondary" onclick="refreshStatus()">
+        Refresh
+      </button>
+      <div id="global-progress" class="global-progress muted">No scraper running</div>
+      <div class="cooldown-control">
+        <label for="input-cooldown" class="cooldown-label">Cooldown (s/request):</label>
+        <input
+          id="input-cooldown"
+          type="number"
+          min="0"
+          step="0.5"
+          class="cooldown-input"
+          title="Per-request delay applied to all scrapers"
+        >
+        <button class="btn btn-secondary" onclick="saveCooldown()">Save</button>
+        <span id="cooldown-status" class="cooldown-status muted"></span>
+      </div>
+    </section>
+
+    <!-- Scraper cards -->
+    <section class="scraper-grid" id="scraper-grid">
+      {% for s in scrapers %}
+      <article class="card" data-scraper="{{ s.name }}">
+        <div class="card-header">
+          <div class="card-title-wrap">
+            <h2>{{ s.display_name }}</h2>
+            <p class="card-title-meta">
+              <span class="scraper-images-count">{{ s.image_file_count | default(0) }} images</span>
+              <span class="meta-sep">•</span>
+              <span class="scraper-disk-usage">{{ s.image_disk_usage_human | default('0 B') }}</span>
+            </p>
+          </div>
+          <span class="badge {{ 'badge-running' if s.is_running else 'badge-idle' }}">
+            {{ 'running' if s.is_running else 'idle' }}
+          </span>
+        </div>
+
+        <dl class="card-stats">
+          <div class="stat-row">
+            <dt>Total entries</dt>
+            <dd class="stat-total">{% if s.progress %}{{ s.progress.urls_total }}{% else %}{{ s.total_entries | default(0) }}{% endif %}</dd>
+          </div>
+          <div class="stat-row">
+            <dt>DB entries</dt>
+            <dd class="stat-db-total">{{ s.total_entries | default(0) }}</dd>
+          </div>
+          <div class="stat-row">
+            <dt>Run queue</dt>
+            <dd>
+              <span class="stat-processed">{% if s.progress %}{{ s.progress.urls_processed }}{% else %}0{% endif %}</span>
+              /
+              <span class="stat-queue-total">{% if s.progress %}{{ s.progress.urls_total }}{% else %}0{% endif %}</span>
+            </dd>
+          </div>
+          <div class="progress-wrap" aria-label="Run progress">
+            <div class="progress-bar-bg">
+              <div class="progress-bar-fill" style="width: {% if s.progress %}{{ s.progress.progress_percent }}{% else %}0{% endif %}%;"></div>
+            </div>
+            <div class="progress-label stat-progress-label">
+              {% if s.progress %}
+                {{ s.progress.progress_percent }}% (live)
+              {% else %}
+                idle
+              {% endif %}
+            </div>
+          </div>
+          <div class="stat-row">
+            <dt>Elapsed / ETA</dt>
+            <dd>
+              <span class="stat-elapsed">{% if s.progress %}{{ s.progress.elapsed_seconds }}s{% else %}0:00{% endif %}</span>
+              /
+              <span class="stat-eta">{% if s.progress and s.progress.eta_seconds is not none %}{{ s.progress.eta_seconds }}s{% else %}--:--{% endif %}</span>
+            </dd>
+          </div>
+          {% if s.last_run %}
+          <div class="stat-row">
+            <dt>Last run</dt>
+            <dd class="stat-last-run">{{ s.last_run.started_at[:16] | replace('T', ' ') }}</dd>
+          </div>
+          <div class="stat-row">
+            <dt>New / Skipped</dt>
+            <dd>
+              <span class="stat-new">{{ s.last_run.entries_scraped }}</span>
+              /
+              <span class="stat-skipped">{{ s.last_run.entries_skipped }}</span>
+            </dd>
+          </div>
+          <div class="stat-row">
+            <dt>Status</dt>
+            <dd class="stat-status {{ 'text-ok' if s.last_run.status == 'completed' else 'text-err' if s.last_run.status == 'failed' else '' }}">
+              {{ s.last_run.status }}
+            </dd>
+          </div>
+          {% else %}
+          <div class="stat-row">
+            <dt>Last run</dt>
+            <dd class="muted">never</dd>
+          </div>
+          {% endif %}
+        </dl>
+
+        <div class="card-actions">
+          <button class="btn btn-run" onclick="runScraper('{{ s.name }}')" {{ 'disabled' if s.is_running }}>
+            <svg class="icon-play" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+            Run
+          </button>
+          <button class="btn btn-link" onclick="toggleHistory('{{ s.name }}')">
+            History
+          </button>
+        </div>
+
+        <div class="run-error-box {% if not (s.last_run and s.last_run.status == 'failed' and s.last_run.error_message) %}hidden{% endif %}">
+          <div class="run-error-header">
+            <div class="run-error-title">Last error</div>
+            <button
+              type="button"
+              class="run-error-copy-btn"
+              data-default-label="Copy"
+              onclick="copyLastError('{{ s.name }}', this)"
+            >
+              Copy
+            </button>
+          </div>
+          <pre class="run-error-message">{% if s.last_run and s.last_run.error_message %}{{ s.last_run.error_message }}{% endif %}</pre>
+        </div>
+
+        <div class="card-history hidden" id="history-{{ s.name }}">
+          <table class="history-table">
+            <thead>
+              <tr><th>Date</th><th>Status</th><th>New</th><th>Skipped</th><th>Total</th><th>Error</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <div class="card-chart">
+          <canvas id="chart-{{ s.name }}" height="140"></canvas>
+        </div>
+      </article>
+      {% endfor %}
+    </section>
+
+  </main>
+
+  <footer>
+    <p>smARTmatch Scraper Dashboard</p>
+  </footer>
+
+  <script>
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+
+    function fmtDate(iso) {
+      if (!iso) return '—';
+      return iso.slice(0, 16).replace('T', ' ');
+    }
+
+    function fmtDuration(seconds) {
+      if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) return '--:--';
+      const total = Math.max(0, Math.floor(Number(seconds)));
+      const h = Math.floor(total / 3600);
+      const m = Math.floor((total % 3600) / 60);
+      const s = total % 60;
+      if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+      return `${m}:${String(s).padStart(2, '0')}`;
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>'"]/g, (ch) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[ch] || ch));
+    }
+
+    function summarizeError(errorMessage) {
+      if (!errorMessage) return '—';
+      const lines = String(errorMessage).split('\n').map(line => line.trim()).filter(Boolean);
+      const summary = lines.length > 0 ? lines[lines.length - 1] : String(errorMessage).trim();
+      return summary.length > 140 ? `${summary.slice(0, 139)}…` : summary;
+    }
+
+    async function copyTextToClipboard(text, buttonEl) {
+      if (!buttonEl) return;
+      const defaultLabel = buttonEl.dataset.defaultLabel || 'Copy';
+
+      const setCopiedState = (label, copied) => {
+        buttonEl.textContent = label;
+        buttonEl.classList.toggle('is-copied', copied);
+        buttonEl.classList.toggle('is-failed', !copied && label !== defaultLabel);
+      };
+
+      if (!text) return;
+
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.setAttribute('readonly', 'readonly');
+          ta.style.position = 'absolute';
+          ta.style.left = '-9999px';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+        }
+
+        setCopiedState('Copied', true);
+      } catch (e) {
+        setCopiedState('Copy failed', false);
+      }
+
+      window.setTimeout(() => {
+        setCopiedState(defaultLabel, false);
+      }, 1400);
+    }
+
+    async function copyLastError(scraperName, buttonEl) {
+      const card = document.querySelector(`[data-scraper="${scraperName}"]`);
+      if (!card || !buttonEl) return;
+      const messageEl = card.querySelector('.run-error-message');
+      const text = (messageEl?.textContent || '').trim();
+      await copyTextToClipboard(text, buttonEl);
+    }
+
+    async function copyHistoryError(buttonEl) {
+      if (!buttonEl) return;
+      const text = (buttonEl.dataset.error || '').trim();
+      await copyTextToClipboard(text, buttonEl);
+    }
+
+    // ------------------------------------------------------------------
+    // API calls
+    // ------------------------------------------------------------------
+
+    async function runScraper(name) {
+      const btn = document.querySelector(`[data-scraper="${name}"] .btn-run`);
+      btn.disabled = true;
+      btn.textContent = 'Starting…';
+
+      try {
+        const res = await fetch(`/api/run/${name}`, { method: 'POST' });
+        const data = await res.json();
+        if (data.error) {
+          alert(data.error);
+          btn.disabled = false;
+          btn.innerHTML = '<svg class="icon-play" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg> Run';
+          return;
+        }
+        // Start polling
+        pollStatus(name);
+      } catch (e) {
+        alert('Request failed: ' + e);
+        btn.disabled = false;
+        btn.innerHTML = '<svg class="icon-play" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg> Run';
+      }
+    }
+
+    async function scrapeAll() {
+      const btn = document.getElementById('btn-scrape-all');
+      btn.disabled = true;
+      btn.textContent = 'Starting all…';
+
+      try {
+        const res = await fetch('/api/run-all', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+        // Poll all
+        startPollingAll();
+      } catch (e) {
+        alert('Request failed: ' + e);
+      }
+      btn.disabled = false;
+      btn.textContent = 'Run All Scrapers';
+    }
+
+    let pollingIntervals = {};
+
+    function pollStatus(name) {
+      if (pollingIntervals[name]) return;
+      setBadge(name, 'running');
+
+      pollingIntervals[name] = setInterval(async () => {
+        const statuses = await (await fetch('/api/status')).json();
+        const s = statuses.find(x => x.name === name);
+        if (!s) return;
+
+        updateGlobalProgress(statuses);
+        updateCard(s);
+
+        if (!s.is_running) {
+          clearInterval(pollingIntervals[name]);
+          delete pollingIntervals[name];
+          loadHistory(name);
+          loadChart(name);
+        }
+      }, 3000);
+    }
+
+    function startPollingAll() {
+      document.querySelectorAll('.card').forEach(card => {
+        const name = card.dataset.scraper;
+        pollStatus(name);
+      });
+    }
+
+    async function refreshStatus() {
+      try {
+        const statuses = await (await fetch('/api/status')).json();
+        updateGlobalProgress(statuses);
+        statuses.forEach(updateCard);
+      } catch (e) {
+        console.error('Refresh failed', e);
+      }
+    }
+
+    function updateGlobalProgress(statuses) {
+      const el = document.getElementById('global-progress');
+      if (!el) return;
+
+      const running = statuses.filter(s => s.is_running && s.progress);
+      if (running.length === 0) {
+        el.textContent = 'No scraper running';
+        el.className = 'global-progress muted';
+        return;
+      }
+
+      const processed = running.reduce((sum, s) => sum + (s.progress?.urls_processed || 0), 0);
+      const total = running.reduce((sum, s) => sum + (s.progress?.urls_total || 0), 0);
+      const unknownTotals = running.some(s => !(s.progress?.urls_total > 0));
+      const elapsedMax = running.reduce((maxV, s) => Math.max(maxV, s.progress?.elapsed_seconds || 0), 0);
+      const etaSum = running.reduce((sum, s) => sum + (s.progress?.eta_seconds || 0), 0);
+      const pct = total > 0 ? Math.min(100, (processed / total) * 100).toFixed(1) : null;
+
+      if (unknownTotals) {
+        el.textContent = `Overall: ${processed}/-- (discovering totals) • Elapsed ${fmtDuration(elapsedMax)} • ETA ${fmtDuration(etaSum)}`;
+      } else {
+        el.textContent = `Overall: ${processed}/${total} (${pct}%) • Elapsed ${fmtDuration(elapsedMax)} • ETA ${fmtDuration(etaSum)}`;
+      }
+      el.className = 'global-progress';
+    }
+
+    // ------------------------------------------------------------------
+    // Card updates
+    // ------------------------------------------------------------------
+
+    function updateCard(s) {
+      const card = document.querySelector(`[data-scraper="${s.name}"]`);
+      if (!card) return;
+
+      const progress = s.progress || null;
+
+      // Badge
+      setBadge(s.name, s.is_running ? 'running' : 'idle');
+
+      // Header metadata
+      const imageCountEl = card.querySelector('.scraper-images-count');
+      const diskUsageEl = card.querySelector('.scraper-disk-usage');
+      if (imageCountEl) {
+        const imageCount = Math.max(0, Number(s.image_file_count) || 0);
+        imageCountEl.textContent = `${imageCount.toLocaleString()} image${imageCount === 1 ? '' : 's'}`;
+      }
+      if (diskUsageEl) {
+        diskUsageEl.textContent = s.image_disk_usage_human || '0 B';
+      }
+
+      // Stats
+      card.querySelector('.stat-total').textContent = (progress && s.is_running && progress.urls_total > 0)
+        ? progress.urls_total
+        : s.total_entries;
+      const dbTotalEl = card.querySelector('.stat-db-total');
+      if (dbTotalEl) dbTotalEl.textContent = s.total_entries;
+
+      const processedEl = card.querySelector('.stat-processed');
+      const queueTotalEl = card.querySelector('.stat-queue-total');
+      const progressFillEl = card.querySelector('.progress-bar-fill');
+      const progressLabelEl = card.querySelector('.stat-progress-label');
+      const elapsedEl = card.querySelector('.stat-elapsed');
+      const etaEl = card.querySelector('.stat-eta');
+
+      if (processedEl) processedEl.textContent = progress ? progress.urls_processed : 0;
+      if (queueTotalEl) queueTotalEl.textContent = (progress && progress.urls_total > 0) ? progress.urls_total : '--';
+      if (progressFillEl) {
+        const pct = (progress && typeof progress.progress_percent === 'number') ? progress.progress_percent : 0;
+        progressFillEl.style.width = `${pct}%`;
+      }
+      if (progressLabelEl) {
+        if (progress && s.is_running && typeof progress.progress_percent === 'number') {
+          progressLabelEl.textContent = `${progress.progress_percent}% (live)`;
+        } else if (progress && s.is_running) {
+          progressLabelEl.textContent = 'discovering total...';
+        } else {
+          progressLabelEl.textContent = 'idle';
+        }
+      }
+      if (elapsedEl) elapsedEl.textContent = (progress && s.is_running)
+        ? fmtDuration(progress.elapsed_seconds)
+        : '0:00';
+      if (etaEl) etaEl.textContent = (progress && s.is_running)
+        ? fmtDuration(progress.eta_seconds)
+        : '--:--';
+
+      const btn = card.querySelector('.btn-run');
+      btn.disabled = s.is_running;
+      if (!s.is_running) {
+        btn.innerHTML = '<svg class="icon-play" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg> Run';
+      } else {
+        btn.textContent = 'Running…';
+      }
+
+      const errorBox = card.querySelector('.run-error-box');
+      const errorMessageEl = card.querySelector('.run-error-message');
+      const errorCopyBtn = card.querySelector('.run-error-copy-btn');
+
+      if (s.last_run) {
+        const lastRunEl = card.querySelector('.stat-last-run');
+        if (lastRunEl) lastRunEl.textContent = fmtDate(s.last_run.started_at);
+
+        const newEl = card.querySelector('.stat-new');
+        if (newEl) newEl.textContent = (progress && s.is_running) ? progress.entries_scraped_estimate : s.last_run.entries_scraped;
+
+        const skipEl = card.querySelector('.stat-skipped');
+        if (skipEl) skipEl.textContent = (progress && s.is_running) ? progress.entries_skipped_estimate : s.last_run.entries_skipped;
+
+        const statusEl = card.querySelector('.stat-status');
+        if (statusEl) {
+          statusEl.textContent = s.last_run.status;
+          statusEl.className = 'stat-status ' + (s.last_run.status === 'completed' ? 'text-ok' : s.last_run.status === 'failed' ? 'text-err' : '');
+        }
+
+        if (errorBox && errorMessageEl) {
+          if (s.last_run.status === 'failed' && s.last_run.error_message) {
+            errorMessageEl.textContent = s.last_run.error_message;
+            errorBox.classList.remove('hidden');
+            if (errorCopyBtn) {
+              errorCopyBtn.disabled = false;
+              errorCopyBtn.textContent = errorCopyBtn.dataset.defaultLabel || 'Copy';
+              errorCopyBtn.classList.remove('is-copied', 'is-failed');
+            }
+          } else {
+            errorMessageEl.textContent = '';
+            errorBox.classList.add('hidden');
+            if (errorCopyBtn) {
+              errorCopyBtn.disabled = true;
+              errorCopyBtn.textContent = errorCopyBtn.dataset.defaultLabel || 'Copy';
+              errorCopyBtn.classList.remove('is-copied', 'is-failed');
+            }
+          }
+        }
+      } else if (errorBox && errorMessageEl) {
+        errorMessageEl.textContent = '';
+        errorBox.classList.add('hidden');
+        if (errorCopyBtn) {
+          errorCopyBtn.disabled = true;
+          errorCopyBtn.textContent = errorCopyBtn.dataset.defaultLabel || 'Copy';
+          errorCopyBtn.classList.remove('is-copied', 'is-failed');
+        }
+      }
+    }
+
+    function setBadge(name, state) {
+      const card = document.querySelector(`[data-scraper="${name}"]`);
+      if (!card) return;
+      const badge = card.querySelector('.badge');
+      badge.textContent = state;
+      badge.className = 'badge ' + (state === 'running' ? 'badge-running' : 'badge-idle');
+    }
+
+    // ------------------------------------------------------------------
+    // History panel
+    // ------------------------------------------------------------------
+
+    async function toggleHistory(name) {
+      const panel = document.getElementById(`history-${name}`);
+      if (panel.classList.contains('hidden')) {
+        await loadHistory(name);
+        panel.classList.remove('hidden');
+      } else {
+        panel.classList.add('hidden');
+      }
+    }
+
+    async function loadHistory(name) {
+      const res = await fetch(`/api/history?scraper=${name}&limit=20`);
+      const runs = await res.json();
+      const tbody = document.querySelector(`#history-${name} tbody`);
+      tbody.innerHTML = runs.map(r => {
+        const statusText = `${r.status}${r.status === 'running' && r.queue_total ? ` (${r.queue_processed ?? 0}/${r.queue_total})` : ''}`;
+        const errorSummary = summarizeError(r.error_message);
+        const fullError = escapeHtml(r.error_message || '');
+        const hasError = Boolean(r.error_message);
+        const copyBtn = hasError
+          ? `<button type="button" class="run-error-copy-btn history-error-copy-btn" data-default-label="Copy" data-error="${fullError}" onclick="copyHistoryError(this)">Copy</button>`
+          : '';
+
+        return `
+          <tr class="${r.status === 'failed' ? 'row-failed' : ''}">
+            <td>${fmtDate(r.started_at)}</td>
+            <td>${escapeHtml(statusText)}</td>
+            <td>${r.entries_scraped ?? 0}</td>
+            <td>${r.entries_skipped ?? 0}</td>
+            <td>${r.total_entries ?? 0}</td>
+            <td class="history-error" title="${fullError}">
+              <span class="history-error-text">${escapeHtml(errorSummary)}</span>
+              ${copyBtn}
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    // ------------------------------------------------------------------
+    // Charts – entries over time per scraper
+    // ------------------------------------------------------------------
+
+    const charts = {};
+
+    async function loadChart(name) {
+      const res = await fetch(`/api/history?scraper=${name}&limit=30`);
+      const runs = await res.json();
+
+      // Reverse so oldest first.
+      const completed = runs.filter(r => r.status === 'completed').reverse();
+      if (completed.length === 0) return;
+
+      const labels = completed.map(r => fmtDate(r.started_at));
+      const scraped = completed.map(r => r.entries_scraped);
+      const skipped = completed.map(r => r.entries_skipped);
+      const totals = completed.map(r => r.total_entries);
+
+      const ctx = document.getElementById(`chart-${name}`);
+      if (!ctx) return;
+
+      if (charts[name]) charts[name].destroy();
+
+      charts[name] = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [
+            {
+              label: 'New entries',
+              data: scraped,
+              backgroundColor: 'rgba(45, 85, 130, 0.7)',
+              borderColor: 'rgba(45, 85, 130, 1)',
+              borderWidth: 1,
+              order: 2,
+            },
+            {
+              label: 'Skipped (already scraped)',
+              data: skipped,
+              backgroundColor: 'rgba(180, 160, 130, 0.6)',
+              borderColor: 'rgba(180, 160, 130, 1)',
+              borderWidth: 1,
+              order: 2,
+            },
+            {
+              label: 'Total in DB',
+              data: totals,
+              type: 'line',
+              borderColor: 'rgba(100, 60, 40, 0.8)',
+              backgroundColor: 'transparent',
+              borderWidth: 2,
+              pointRadius: 3,
+              tension: 0.3,
+              yAxisID: 'y1',
+              order: 1,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            legend: {
+              labels: {
+                font: { family: "'Palatino Linotype', 'Book Antiqua', Palatino, Georgia, serif", size: 11 },
+                color: '#3a3028',
+              },
+            },
+          },
+          scales: {
+            x: {
+              ticks: {
+                maxRotation: 45,
+                font: { size: 10 },
+                color: '#6b5e50',
+              },
+              grid: { display: false },
+            },
+            y: {
+              beginAtZero: true,
+              title: { display: true, text: 'Per Run', color: '#3a3028', font: { size: 11 } },
+              ticks: { color: '#6b5e50' },
+              grid: { color: 'rgba(0,0,0,0.06)' },
+            },
+            y1: {
+              position: 'right',
+              beginAtZero: true,
+              title: { display: true, text: 'Total', color: '#3a3028', font: { size: 11 } },
+              ticks: { color: '#6b5e50' },
+              grid: { drawOnChartArea: false },
+            },
+          },
+        },
+      });
+    }
+
+    // ------------------------------------------------------------------
+    // Init: load charts for scrapers that have data
+    // ------------------------------------------------------------------
+
+    document.addEventListener('DOMContentLoaded', () => {
+      refreshStatus();
+      setInterval(refreshStatus, 3000);
+      document.querySelectorAll('.card').forEach(card => {
+        loadChart(card.dataset.scraper);
+      });
+
+      // Auto-poll any that are currently running.
+      document.querySelectorAll('.badge-running').forEach(badge => {
+        const card = badge.closest('.card');
+        if (card) pollStatus(card.dataset.scraper);
+      });
+
+      loadCooldown();
+    });
+
+    // ------------------------------------------------------------------
+    // Cooldown config
+    // ------------------------------------------------------------------
+
+    async function loadCooldown() {
+      try {
+        const res = await fetch('/api/config');
+        const data = await res.json();
+        const input = document.getElementById('input-cooldown');
+        if (input && data.request_cooldown_seconds !== undefined) {
+          input.value = data.request_cooldown_seconds;
+        }
+      } catch (e) {
+        console.error('Failed to load cooldown config', e);
+      }
+    }
+
+    async function saveCooldown() {
+      const input = document.getElementById('input-cooldown');
+      const statusEl = document.getElementById('cooldown-status');
+      if (!input) return;
+
+      const value = parseFloat(input.value);
+      if (Number.isNaN(value) || value < 0) {
+        statusEl.textContent = 'Invalid value';
+        statusEl.className = 'cooldown-status text-err';
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ request_cooldown_seconds: value }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          statusEl.textContent = data.description || 'Error saving';
+          statusEl.className = 'cooldown-status text-err';
+          return;
+        }
+        input.value = data.request_cooldown_seconds;
+        statusEl.textContent = 'Saved';
+        statusEl.className = 'cooldown-status text-ok';
+        window.setTimeout(() => {
+          statusEl.textContent = '';
+          statusEl.className = 'cooldown-status muted';
+        }, 1500);
+      } catch (e) {
+        statusEl.textContent = 'Request failed';
+        statusEl.className = 'cooldown-status text-err';
+      }
+    }
+  </script>
+
+</body>
+</html>

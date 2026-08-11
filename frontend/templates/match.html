@@ -1,0 +1,551 @@
+{% extends "base.html" %}
+{% block content %}
+    {% from "_score_progress_stack.html" import score_progress_stack %}
+    {% macro source_link(url) -%}
+        {% if url %}
+            <a class="link-primary" href="{{ url }}" target="_blank" rel="noopener noreferrer">
+                <i class="bi bi-box-arrow-up-right me-1" aria-hidden="true"></i>Quelle öffnen
+            </a>
+        {% else %}
+            <i class="text-muted">Unbekannt</i>
+        {% endif %}
+    {%- endmacro %}
+    {% macro sim_cell(value, field_type) -%}
+        {% if value is none %}
+            <td class="text-center match-details-score-cell">
+                <i class="bi bi-slash-circle fs-4 text-secondary" title="Nicht berechnet" aria-label="Nicht verfügbar" style="transform: scaleY(-1); display: inline-block;"></i>
+            </td>
+        {% else %}
+            {% if field_type == 'title' %}
+                {% set similar = value > 0.80 %}
+                {% set dissimilar = value < 0.50 %}
+            {% elif field_type == 'artist' %}
+                {% set similar = value > 0.90 %}
+                {% set dissimilar = value < 0.70 %}
+            {% else %}
+                {% set similar = value >= 0.9999 %}
+                {% set dissimilar = value <= 0.0001 %}
+            {% endif %}
+            <td class="text-center match-details-score-cell">
+                {% if similar %}
+                    <i class="bi bi-check-circle-fill fs-4 text-success" title="{{ score_percent_short(value) }}" aria-label="Ähnlich"></i>
+                {% elif dissimilar %}
+                    <i class="bi bi-x-circle-fill fs-4 text-danger" title="{{ score_percent_short(value) }}" aria-label="Unähnlich"></i>
+                {% else %}
+                    <i class="bi bi-question-circle-fill fs-4 text-warning" title="{{ score_percent_short(value) }}" aria-label="Mittelähnlich"></i>
+                {% endif %}
+            </td>
+        {% endif %}
+    {%- endmacro %}
+    {% macro image_file_src(image_file) -%}{{ url_for('db_image_file', image_file_id=image_file.image_file_id) }}{%- endmacro %}
+    {% macro auction_gallery(image_files, artwork_id, gallery_id) -%}
+        {% if image_files|length > 0 %}
+            <div id="{{ gallery_id }}"
+                 class="carousel slide auction-gallery"
+                 data-bs-ride="false"
+                 data-bs-touch="true"
+                 aria-label="Auktionsbilder">
+                <div class="carousel-inner auction-gallery-main">
+                    {% for image_file in image_files %}
+                        <div class="carousel-item {% if loop.first %}active{% endif %}">
+                            <div class="auction-gallery-slide">
+                                <div class="zoom-wrap match-detail-zoom" data-zoom="2.5">
+                                    <img src="{{ image_file_src(image_file) }}"
+                                         data-zoom-src="{{ image_file_src(image_file) }}"
+                                         alt="Abbildung Auktionswerk {{ loop.index }}"
+                                         width=""
+                                         height=""
+                                         class="img-fluid" />
+                                    <div class="zoom-lens"></div>
+                                </div>
+                            </div>
+                        </div>
+                    {% endfor %}
+                </div>
+                {% if image_files|length > 1 %}
+                    <button class="carousel-control-prev auction-gallery-control"
+                            type="button"
+                            data-bs-target="#{{ gallery_id }}"
+                            data-bs-slide="prev"
+                            aria-label="Vorheriges Auktionsbild">
+                        <span class="carousel-control-prev-icon" aria-hidden="true"></span>
+                    </button>
+                    <button class="carousel-control-next auction-gallery-control"
+                            type="button"
+                            data-bs-target="#{{ gallery_id }}"
+                            data-bs-slide="next"
+                            aria-label="Nächstes Auktionsbild">
+                        <span class="carousel-control-next-icon" aria-hidden="true"></span>
+                    </button>
+                {% endif %}
+                <div class="carousel-indicators auction-gallery-thumbnails">
+                    {% for image_file in image_files %}
+                        <button type="button"
+                                class="auction-gallery-thumbnail {% if loop.first %}active{% endif %}"
+                                data-bs-target="#{{ gallery_id }}"
+                                data-bs-slide-to="{{ loop.index0 }}"
+                                {% if loop.first %}aria-current="true"{% endif %}
+                                aria-label="Auktionsbild {{ loop.index }} anzeigen">
+                            <img src="{{ image_file_src(image_file) }}"
+                                 alt="Miniatur Auktionsbild {{ loop.index }}"
+                                 width=""
+                                 height="" />
+                        </button>
+                    {% endfor %}
+                </div>
+            </div>
+        {% else %}
+            <div class="zoom-wrap match-detail-zoom" data-zoom="2.5">
+                <img src="{{ url_for('db_image_auction', artwork_id=artwork_id) }}"
+                     data-zoom-src="{{ url_for('db_image_auction', artwork_id=artwork_id) }}"
+                     alt="Abbildung Auktionswerk"
+                     width=""
+                     height=""
+                     class="img-fluid" />
+                <div class="zoom-lens"></div>
+            </div>
+        {% endif %}
+    {%- endmacro %}
+    {% if search %}
+        {% set current_category = 'Suchergebnisse' %}
+        {% set current_category_icon = 'bi-search' %}
+    {% elif bookmarked == 'true' %}
+        {% set current_category = 'Gemerkt' %}
+        {% set current_category_icon = 'bi-bookmark' %}
+    {% elif rating == 'accepted' %}
+        {% set current_category = 'Akzeptiert' %}
+        {% set current_category_icon = 'bi-check-circle' %}
+    {% elif rating == 'discarded' %}
+        {% set current_category = 'Verworfen' %}
+        {% set current_category_icon = 'bi-trash' %}
+    {% elif rating == 'all' %}
+        {% set current_category = 'Alle Matches' %}
+        {% set current_category_icon = 'bi-list-ul' %}
+    {% else %}
+        {% set current_category = 'Unbewertet' %}
+        {% set current_category_icon = 'bi-inbox' %}
+    {% endif %}
+    {% set auction_artist = auction_artist_label(match.auction_artwork) %}
+    {% set lost_image_files = match.lost_artwork.image_files if match.lost_artwork.image_files is defined else [] %}
+    {% set auction_image_files = match.auction_artwork.image_files if match.auction_artwork.image_files is defined else [] %}
+    {% set visualization = match.visualization or {} %}
+    {% set image_matching = visualization.get('image_matching', {}) %}
+    {% set best_image_match = image_matching.get('best_match', {}) if image_matching else {} %}
+    {% set keypoint_matches = (best_image_match.get('keypoint_matches') if best_image_match else none) or visualization.get('keypoint_matches') %}
+    {% set keypoint_lost_image_file_id = (best_image_match.get('lost_image_file_id') if best_image_match else none) or visualization.get('lost_image_file_id') %}
+    {% set keypoint_auction_image_file_id = (best_image_match.get('auction_image_file_id') if best_image_match else none) or visualization.get('auction_image_file_id') %}
+    <div class="match-detail-page">
+        <div class="d-flex flex-column">
+            <div class="py-3">
+                <div class="row g-2 align-items-center">
+                    <div class="col-6 col-md-3 text-start">
+                        <a role="button"
+                           class="btn btn-outline-secondary"
+                           href="{{ url_for('match_list', rating=rating, sort=sort, bookmarked=bookmarked, search=search, image_weight=image_weight) }}">
+                            <i class="bi bi-list-ul me-1" aria-hidden="true"></i>Zur Liste
+                        </a>
+                    </div>
+                    <div class="col-12 col-md-6 order-3 order-md-2 text-center">
+                        <div class="match-category-indicator" aria-label="Aktuelle Kategorisierung">
+                            <span class="text-muted small d-block">Aktuelle Kategorie</span>
+                            <span class="fw-semibold">
+                                <i class="bi {{ current_category_icon }} me-1" aria-hidden="true"></i>{{ current_category }}
+                            </span>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3 order-2 order-md-3 text-end">
+                        <form>
+                            <input class="d-none" name="match-id" value="{{ match.match_id }}" />
+                            <input type="hidden" name="lost-artwork-id" value="{{ match.lost_artwork_id }}" />
+                            <input type="hidden" name="auction-artwork-id" value="{{ match.auction_artwork_id }}" />
+                            <input type="hidden" name="image_weight" value="{{ image_weight }}" />
+                            {% if match.bookmarked %}
+                                <button class="btn btn-primary"
+                                        type="button"
+                                        hx-post="/api/match/unbookmark"
+                                        hx-swap="outerHTML">
+                                    <i class="bi bi-bookmark-fill me-1" aria-hidden="true"></i>Gemerkt
+                                </button>
+                            {% else %}
+                                <button class="btn btn-outline-primary"
+                                        type="button"
+                                        hx-post="/api/match/bookmark"
+                                        hx-swap="outerHTML">
+                                    <i class="bi bi-bookmark me-1" aria-hidden="true"></i>Merken
+                                </button>
+                            {% endif %}
+                        </form>
+                    </div>
+                </div>
+            </div>
+            <div class="match-detail-scroll-area">
+                <div>
+                    <div class="row g-2 gy-3 align-items-stretch match-media-row">
+                        <div class="col-12 col-md-2 d-flex flex-column text-center align-items-center justify-content-center order-1 order-md-2">
+                            <div class="w-100 match-score-panel">
+                                {{ score_progress_stack(match, image_weight, "match-detail-score-stack my-2") }}
+                            </div>
+                            <div class="mt-3 d-none d-md-flex flex-row justify-content-center gap-2 match-viewer-buttons">
+                                <button type="button"
+                                        class="btn btn-outline-secondary btn-sm"
+                                        data-bs-toggle="modal"
+                                        data-bs-target="#compare-modal"
+                                        aria-label="Bilder vergleichen"
+                                        title="Bilder vergleichen">
+                                    <i class="bi bi-search" aria-hidden="true"></i>
+                                </button>
+                                <button type="button"
+                                        class="btn btn-outline-secondary btn-sm"
+                                        data-bs-toggle="modal"
+                                        data-bs-target="#keypoint-plot-modal"
+                                        aria-label="Keypoint-Diagramm anzeigen"
+                                        title="Keypoint-Diagramm anzeigen">
+                                    <i class="bi bi-diagram-3" aria-hidden="true"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-5 d-flex flex-column align-items-center order-2 order-md-1">
+                            <div class="d-flex flex-grow-1 w-100 justify-content-center align-items-center match-image-container">
+                                <div class="text-center">
+                                    {% if match.lost_artwork.image_paths|length > 0 %}
+                                        <div class="zoom-wrap match-detail-zoom" data-zoom="2.5">
+                                            <img src="{{ url_for('db_image_lost', artwork_id=match.lost_artwork.lost_artwork_id) }}"
+                                                 data-zoom-src="{{ url_for('db_image_lost', artwork_id=match.lost_artwork.lost_artwork_id) }}"
+                                                 alt="Abbildung Verlorenes Werk"
+                                                 width=""
+                                                 height=""
+                                                 class="img-fluid" />
+                                            <div class="zoom-lens"></div>
+                                        </div>
+                                    {% else %}
+                                        <i class="text-muted">Kein Bild vorhanden</i>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-5 d-flex flex-column align-items-center order-3">
+                            <div class="d-flex flex-grow-1 w-100 justify-content-center align-items-center match-image-container">
+                                <div class="text-center">
+                                    {% if match.auction_artwork.image_paths|length > 0 %}
+                                        {{ auction_gallery(auction_image_files, match.auction_artwork.auction_artwork_id, 'auction-gallery-main') }}
+                                    {% else %}
+                                        <i class="text-muted">Kein Bild vorhanden</i>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-12 d-md-none order-4">
+                            <div class="d-flex flex-row flex-nowrap justify-content-center gap-2 match-mobile-viewer-actions">
+                                <button type="button"
+                                        class="btn btn-outline-secondary btn-sm"
+                                        data-bs-toggle="modal"
+                                        data-bs-target="#compare-modal"
+                                        aria-label="Bilder vergleichen"
+                                        title="Bilder vergleichen">
+                                    <i class="bi bi-search" aria-hidden="true"></i>
+                                </button>
+                                <button type="button"
+                                        class="btn btn-outline-secondary btn-sm"
+                                        data-bs-toggle="modal"
+                                        data-bs-target="#keypoint-plot-modal"
+                                        aria-label="Keypoint-Diagramm anzeigen"
+                                        title="Keypoint-Diagramm anzeigen">
+                                    <i class="bi bi-diagram-3" aria-hidden="true"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mt-4 match-details-section">
+                        <div class="match-details-table-scroll" data-center-scroll="true">
+                            <table class="table table-borderless table-striped match-details-table my-0">
+                                <colgroup>
+                                    <col class="match-details-label-col" />
+                                    <col class="match-details-side-col" />
+                                    <col class="match-details-score-col" />
+                                    <col class="match-details-side-col" />
+                                    <col class="match-details-label-col" />
+                                </colgroup>
+                                <thead>
+                                    <tr class="text-center">
+                                        <td></td>
+                                        <td><b>Verlorenes Werk</b></td>
+                                        <td><b>Ähnlichkeit</b></td>
+                                        <td><b>Auktionswerk</b></td>
+                                        <td></td>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td>Titel</td>
+                                        <td class="text-end">
+                                            {% if match.lost_artwork.title %}{{ match.lost_artwork.title }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}
+                                        </td>
+                                        {{ sim_cell(match.match_scores.title_sim if match.match_scores else none, 'title') }}
+                                        <td>
+                                            {% if match.auction_artwork.title %}{{ match.auction_artwork.title }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}
+                                        </td>
+                                        <td></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Künstler*in</td>
+                                        <td class="text-end">
+                                            {% if match.lost_artwork.artists|length > 0 %}
+                                                {% for artist in match.lost_artwork.artists %}{{ artist.complete_name }}{% if not loop.last %}, {% endif %}{% endfor %}
+                                            {% else %}
+                                                <i class="text-muted">Unbekannt</i>
+                                            {% endif %}
+                                        </td>
+                                        {{ sim_cell(match.match_scores.artist_sim if match.match_scores else none, 'artist') }}
+                                        <td>
+                                            {% if auction_artist %}{{ auction_artist }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}
+                                        </td>
+                                        <td></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Datierung</td>
+                                        <td class="text-end">
+                                            {% if match.lost_artwork.dating %}{{ match.lost_artwork.dating }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}
+                                        </td>
+                                        {{ sim_cell(match.match_scores.dating_sim if match.match_scores else none, 'binary') }}
+                                        <td>
+                                            {% if match.auction_artwork.dating %}{{ match.auction_artwork.dating }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}
+                                        </td>
+                                        <td></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Maße</td>
+                                        <td class="text-end">
+                                            {% if match.lost_artwork.width and match.lost_artwork.height %}{{ match.lost_artwork.width }} x {{ match.lost_artwork.height }} cm{% else %}<i class="text-muted">Unbekannt</i>{% endif %}
+                                        </td>
+                                        {{ sim_cell(match.match_scores.dimensions_sim if match.match_scores else none, 'binary') }}
+                                        <td>
+                                            {% if match.auction_artwork.width and match.auction_artwork.height %}{{ match.auction_artwork.width }} x {{ match.auction_artwork.height }} cm{% else %}<i class="text-muted">Unbekannt</i>{% endif %}
+                                        </td>
+                                        <td></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Material</td>
+                                        <td class="text-end">
+                                            {% if match.lost_artwork.material_labels|length > 0 %}
+                                                {% for material in match.lost_artwork.material_labels %}{{ material }}{% if not loop.last %}, {% endif %}{% endfor %}
+                                            {% else %}
+                                                <i class="text-muted">Unbekannt</i>
+                                            {% endif %}
+                                        </td>
+                                        {{ sim_cell(match.match_scores.material_sim if match.match_scores else none, 'binary') }}
+                                        <td>
+                                            {% if match.auction_artwork.material_labels|length > 0 %}
+                                                {% for material in match.auction_artwork.material_labels %}{{ material }}{% if not loop.last %}, {% endif %}{% endfor %}
+                                            {% else %}
+                                                <i class="text-muted">Unbekannt</i>
+                                            {% endif %}
+                                        </td>
+                                        <td></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Technik</td>
+                                        <td class="text-end">
+                                            {% if match.lost_artwork.technique_labels|length > 0 %}
+                                                {% for technique in match.lost_artwork.technique_labels %}{{ technique }}{% if not loop.last %}, {% endif %}{% endfor %}
+                                            {% else %}
+                                                <i class="text-muted">Unbekannt</i>
+                                            {% endif %}
+                                        </td>
+                                        {{ sim_cell(match.match_scores.technique_sim if match.match_scores else none, 'binary') }}
+                                        <td>
+                                            {% if match.auction_artwork.technique_labels|length > 0 %}
+                                                {% for technique in match.auction_artwork.technique_labels %}{{ technique }}{% if not loop.last %}, {% endif %}{% endfor %}
+                                            {% else %}
+                                                <i class="text-muted">Unbekannt</i>
+                                            {% endif %}
+                                        </td>
+                                        <td></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Quelle</td>
+                                        <td class="text-end">{{ source_link(match.lost_artwork.lost_art_url) }}</td>
+                                        <td class="text-center text-muted">--</td>
+                                        <td>{{ source_link(match.auction_artwork.lot_url) }}</td>
+                                        <td></td>
+                                    </tr>
+                                    <tr class="match-extra-detail-row d-none" id="match-extra-detail-description">
+                                        <td>Beschreibung</td>
+                                        <td class="match-multiline-cell">
+                                            {% if match.lost_artwork.description %}{{ match.lost_artwork.description }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}
+                                        </td>
+                                        <td class="text-center text-muted">--</td>
+                                        <td class="match-multiline-cell">
+                                            {% if match.auction_artwork.description %}{{ match.auction_artwork.description }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}
+                                        </td>
+                                        <td></td>
+                                    </tr>
+                                    <tr class="match-extra-detail-row d-none" id="match-extra-detail-provenance">
+                                        <td>Provenienz</td>
+                                        <td class="match-multiline-cell">
+                                            {% if match.lost_artwork.provenance %}{{ match.lost_artwork.provenance }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}
+                                        </td>
+                                        <td class="text-center text-muted">--</td>
+                                        <td class="match-multiline-cell">
+                                            {% if match.auction_artwork.provenance %}{{ match.auction_artwork.provenance }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}
+                                        </td>
+                                        <td></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="d-flex justify-content-center mt-3">
+                            <button class="btn btn-outline-primary match-details-more-toggle"
+                                    type="button"
+                                    aria-expanded="false"
+                                    aria-controls="match-extra-detail-description match-extra-detail-provenance"
+                                    data-more-label="Mehr anzeigen"
+                                    data-less-label="Weniger anzeigen">Mehr anzeigen</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="container-fluid p-0 match-review-actions">
+                <div class="frontend-content-container py-3 d-flex flex-row flex-nowrap align-items-center gap-2 match-review-actions-inner">
+                    <div class="match-nav-slot d-flex justify-content-start">
+                        {% if previous_match %}
+                            <a class="btn btn-outline-secondary match-review-nav-button"
+                               role="button"
+                               aria-label="Vorheriges Match"
+                               title="Vorheriges Match"
+                               href="{{ url_for('match', match_id=previous_match.match_id, rating=rating, sort=sort, bookmarked=bookmarked, search=search, image_weight=image_weight) }}">
+                                <i class="bi bi-arrow-left" aria-hidden="true"></i><span class="d-none d-md-inline ms-1">Vorheriges Match</span>
+                            </a>
+                        {% endif %}
+                    </div>
+                    <form class="match-rating-form">
+                        <input class="d-none" name="match-id" value="{{ match.match_id }}" />
+                        <input type="hidden" name="lost-artwork-id" value="{{ match.lost_artwork_id }}" />
+                        <input type="hidden" name="auction-artwork-id" value="{{ match.auction_artwork_id }}" />
+                        {% if rating is not none %}<input type="hidden" name="rating" value="{{ rating }}" />{% endif %}
+                        {% if sort is not none %}<input type="hidden" name="sort" value="{{ sort }}" />{% endif %}
+                        {% if bookmarked is not none %}<input type="hidden" name="bookmarked" value="{{ bookmarked }}" />{% endif %}
+                        {% if search %}<input type="hidden" name="search" value="{{ search }}" />{% endif %}
+                        <input type="hidden" name="image_weight" value="{{ image_weight }}" />
+                        <div class="d-flex flex-row flex-nowrap gap-3 justify-content-center" id="match-rating-buttons">
+                            {% if match.rating == 0 or match.rating is none %}
+                                <button class="btn btn-danger match-rating-action"
+                                        type="button"
+                                        hx-post="/api/match/discard"
+                                        hx-target="#match-rating-buttons"
+                                        hx-swap="innerHTML">Verwerfen</button>
+                                <button class="btn btn-success match-rating-action"
+                                        type="button"
+                                        hx-post="/api/match/accept"
+                                        hx-target="#match-rating-buttons"
+                                        hx-swap="innerHTML">Akzeptieren</button>
+                            {% else %}
+                                <button class="btn btn-outline-secondary match-rating-action"
+                                        type="button"
+                                        hx-post="/api/match/reset-rating"
+                                        hx-target="#match-rating-buttons"
+                                        hx-swap="innerHTML">Bewertung zurücksetzen</button>
+                            {% endif %}
+                        </div>
+                    </form>
+                    <div class="match-nav-slot d-flex justify-content-end">
+                        {% if next_match %}
+                            <a class="btn btn-outline-secondary match-review-nav-button"
+                               role="button"
+                               aria-label="Nächstes Match"
+                               title="Nächstes Match"
+                               href="{{ url_for('match', match_id=next_match.match_id, rating=rating, sort=sort, bookmarked=bookmarked, search=search, image_weight=image_weight) }}">
+                                <span class="d-none d-md-inline me-1">Nächstes Match</span><i class="bi bi-arrow-right" aria-hidden="true"></i>
+                            </a>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="modal fade match-fullscreen-modal"
+         id="compare-modal"
+         tabindex="-1"
+         aria-labelledby="compare-modal-label"
+         aria-hidden="true">
+        <div class="modal-dialog modal-fullscreen">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 class="modal-title visually-hidden" id="compare-modal-label">Bilder vergleichen</h2>
+                    <button type="button"
+                            class="btn-close"
+                            data-bs-dismiss="modal"
+                            aria-label="Close"></button>
+                </div>
+                <div class="modal-body match-image-modal-body">
+                    <div class="row g-3 h-100 match-image-modal-row">
+                        <div class="col-12 col-md-6 d-flex justify-content-center align-items-center match-image-modal-pane">
+                            {% if match.lost_artwork.image_paths|length > 0 %}
+                                <div class="zoom-wrap match-detail-zoom" data-zoom="2.5">
+                                    <img src="{{ url_for('db_image_lost', artwork_id=match.lost_artwork.lost_artwork_id) }}"
+                                         data-zoom-src="{{ url_for('db_image_lost', artwork_id=match.lost_artwork.lost_artwork_id) }}"
+                                         alt="Abbildung Verlorenes Werk"
+                                         width=""
+                                         height=""
+                                         class="img-fluid match-modal-image" />
+                                    <div class="zoom-lens"></div>
+                                </div>
+                            {% else %}
+                                <i class="text-muted">Kein Bild vorhanden</i>
+                            {% endif %}
+                        </div>
+                        <div class="col-12 col-md-6 d-flex justify-content-center align-items-center match-image-modal-pane">
+                            {% if match.auction_artwork.image_paths|length > 0 %}
+                                {{ auction_gallery(auction_image_files, match.auction_artwork.auction_artwork_id, 'auction-gallery-modal') }}
+                            {% else %}
+                                <i class="text-muted">Kein Bild vorhanden</i>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="modal fade match-fullscreen-modal"
+         id="keypoint-plot-modal"
+         tabindex="-1"
+         aria-labelledby="keypoint-plot-modal-label"
+         aria-hidden="true">
+        <div class="modal-dialog modal-fullscreen">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 class="modal-title visually-hidden" id="keypoint-plot-modal-label">Keypoint-Diagramm</h2>
+                    <button type="button"
+                            class="btn-close"
+                            data-bs-dismiss="modal"
+                            aria-label="Close"></button>
+                </div>
+                <div class="modal-body match-image-modal-body keypoint-modal-body">
+                    <div class="d-flex h-100 justify-content-center align-items-center match-image-modal-pane">
+                        {% if keypoint_matches %}
+                            <div class="keypoint-canvas-viewer"
+                                 data-keypoint-viewer
+                                 data-keypoint-matches='{{ keypoint_matches|tojson|forceescape }}'
+                                 data-lost-image-src="{% if keypoint_lost_image_file_id %}{{ url_for('db_image_file', image_file_id=keypoint_lost_image_file_id) }}{% elif lost_image_files|length > 0 %}{{ image_file_src(lost_image_files[0]) }}{% else %}{{ url_for('db_image_lost', artwork_id=match.lost_artwork.lost_artwork_id) }}{% endif %}"
+                                 data-auction-image-src="{% if keypoint_auction_image_file_id %}{{ url_for('db_image_file', image_file_id=keypoint_auction_image_file_id) }}{% elif auction_image_files|length > 0 %}{{ image_file_src(auction_image_files[0]) }}{% else %}{{ url_for('db_image_auction', artwork_id=match.auction_artwork.auction_artwork_id) }}{% endif %}">
+                                <div class="keypoint-canvas-toolbar">
+                                    <span class="keypoint-canvas-legend-item"><i class="keypoint-color-dot keypoint-color-dot-lost"></i>Verlorenes Werk</span>
+                                    <span class="keypoint-canvas-legend-item"><i class="keypoint-color-dot keypoint-color-dot-auction"></i>Auktionswerk</span>
+                                    <span class="keypoint-canvas-legend-item"><i class="keypoint-color-line"></i>Match-Linie</span>
+                                    <span class="badge text-bg-light border keypoint-match-count">
+                                        {{ keypoint_matches.get('match_count', keypoint_matches.get('matches', [])|length) }} Matches
+                                    </span>
+                                </div>
+                                <div class="keypoint-canvas-stage">
+                                    <canvas class="keypoint-match-canvas" aria-label="Keypoint-Matches der beiden Bilder"></canvas>
+                                    <div class="keypoint-canvas-message" data-keypoint-status>Keypoint-Daten werden geladen…</div>
+                                </div>
+                            </div>
+                        {% else %}
+                            Kein Keypoint-Diagramm vorhanden
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endblock content %}

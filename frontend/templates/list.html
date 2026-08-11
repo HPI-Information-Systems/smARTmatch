@@ -1,0 +1,449 @@
+{% extends "base.html" %}
+{% block content %}
+    {% from "_score_progress_stack.html" import score_progress_stack %}
+    {% if search_active %}
+        {% set current_category = 'Suchergebnisse' %}
+    {% elif rating == 'all' and bookmarked == 'all' %}
+        {% set current_category = 'Matches' %}
+    {% elif bookmarked == 'true' %}
+        {% set current_category = 'Gemerkt' %}
+    {% elif rating == 'accepted' %}
+        {% set current_category = 'Akzeptiert' %}
+    {% elif rating == 'discarded' %}
+        {% set current_category = 'Verworfen' %}
+    {% else %}
+        {% set current_category = 'Unbewertet' %}
+    {% endif %}
+    <div class="row m-0 match-list-layout">
+        <aside class="col-12 col-lg-2 bg-light px-3 match-list-sidebar">
+            <div class="sticky-lg-top pt-3">
+                <ul class="nav nav-pills flex-column gap-1">
+                    {% if search_active %}
+                        <li class="nav-item">
+                            <a class="nav-link link-body-emphasis d-flex align-items-center justify-content-between gap-2 search-all-matches-link active"
+                               href="{{ url_for('match_list', search=search, sort=sort, image_weight=image_weight) }}">
+                                <span><i class="bi bi-list-ul me-1" aria-hidden="true"></i> Alle Matches</span>
+                                <span class="directory-count">{{ total_matches }}</span>
+                            </a>
+                        </li>
+                    {% endif %}
+                    <li class="nav-item">
+                        <a class="nav-link link-body-emphasis d-flex align-items-center justify-content-between gap-2 {% if not search_active and rating == 'unrated' and bookmarked == 'false' %}active{% endif %}"
+                           href="{{ url_for('match_list', rating='unrated', sort='similarity', bookmarked='false', image_weight=image_weight) }}">
+                            <span><i class="bi bi-inbox me-1" aria-hidden="true"></i> Unbewertet</span>
+                            <span class="directory-count">{{ directory_counts['new'] }}</span>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link link-body-emphasis d-flex align-items-center justify-content-between gap-2 {% if not search_active and bookmarked == 'true' %}active{% endif %}"
+                           href="{{ url_for('match_list', rating='all', sort='newest', bookmarked='true', image_weight=image_weight) }}">
+                            <span><i class="bi bi-bookmark me-1" aria-hidden="true"></i> Gemerkt</span>
+                            <span class="directory-count">{{ directory_counts['bookmarked'] }}</span>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link link-body-emphasis d-flex align-items-center justify-content-between gap-2 {% if not search_active and rating == 'accepted' %}active{% endif %}"
+                           href="{{ url_for('match_list', rating='accepted', sort='newest', bookmarked='all', image_weight=image_weight) }}">
+                            <span><i class="bi bi-check-circle me-1" aria-hidden="true"></i> Akzeptiert</span>
+                            <span class="directory-count">{{ directory_counts['accepted'] }}</span>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link link-body-emphasis d-flex align-items-center justify-content-between gap-2 {% if not search_active and rating == 'discarded' %}active{% endif %}"
+                           href="{{ url_for('match_list', rating='discarded', sort='newest', bookmarked='all', image_weight=image_weight) }}">
+                            <span><i class="bi bi-trash me-1" aria-hidden="true"></i> Verworfen</span>
+                            <span class="directory-count">{{ directory_counts['discarded'] }}</span>
+                        </a>
+                    </li>
+                </ul>
+                <hr class="hr" />
+                <form class="match-list-controls"
+                      action="{{ url_for('match_list') }}"
+                      method="get"
+                      hx-get="{{ url_for('match_list') }}"
+                      hx-trigger="change from:select, input changed delay:250ms from:.similarity-weight-slider"
+                      hx-target="#frontend-main-content"
+                      hx-select="#frontend-main-content"
+                      hx-swap="outerHTML"
+                      hx-push-url="true"
+                      hx-sync="this:replace">
+                    {% if search_active %}
+                        <input type="hidden" name="search" value="{{ search }}" />
+                        <p class="small text-muted mb-3">Die Suche wird über allen Matches ausgeführt.</p>
+                    {% else %}
+                        {% if rating is not none %}<input type="hidden" name="rating" value="{{ rating }}" />{% endif %}
+                        {% if bookmarked is not none %}<input type="hidden" name="bookmarked" value="{{ bookmarked }}" />{% endif %}
+                    {% endif %}
+                    <label for="sort" class="form-label">Sortieren</label>
+                    <select class="form-select mb-3" name="sort" id="sort">
+                        <option value="similarity" {% if sort == 'similarity' %}selected{% endif %}>Similarity</option>
+                        <option value="newest" {% if sort == 'newest' %}selected{% endif %}>Neuste</option>
+                        <option value="oldest" {% if sort == 'oldest' %}selected{% endif %}>Älteste</option>
+                    </select>
+                    <div class="similarity-weight-control mb-3">
+                        <div class="d-flex justify-content-between align-items-center gap-2 mb-1">
+                            <span class="small fw-semibold similarity-image-label">Image Matching</span>
+                            <span class="small fw-semibold similarity-metadata-label">Metadata Matching</span>
+                        </div>
+                        <input class="form-range similarity-weight-slider"
+                               type="range"
+                               min="0"
+                               max="100"
+                               step="1"
+                               name="image_weight"
+                               value="{{ image_weight }}"
+                               style="--image-weight: {{ image_weight }}%"
+                               aria-label="Gewichtung zwischen Image Matching und Metadata Matching" />
+                        <div class="d-flex justify-content-between small text-muted">
+                            <span><span data-image-weight-output>{{ image_weight }}</span>% Image</span>
+                            <span><span data-metadata-weight-output>{{ metadata_weight(image_weight) }}</span>% Metadata</span>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </aside>
+        <div class="col match-list-content">
+            <div class="px-2 pt-3 pb-2 bg-white match-list-heading">
+                {% if search_active %}
+                    <h1 class="h5 mb-1">Suchergebnisse für „{{ search }}“</h1>
+                    <p class="text-muted small mb-0">{{ total_matches }} Match{% if total_matches != 1 %}es{% endif %} über alle Kategorien</p>
+                {% else %}
+                    <h1 class="h5 mb-1">{{ current_category }}</h1>
+                    <p class="text-muted small mb-0">{{ total_matches }} Match{% if total_matches != 1 %}es{% endif %} in dieser Kategorie</p>
+                {% endif %}
+            </div>
+            {% if matches|length > 0 %}
+                <div class="row sticky-top bg-white p-2 match-list-column-heading">
+                    <div class="col text-end">
+                        <b>Verlorenes Werk</b>
+                    </div>
+                    <div class="col-5"></div>
+                    <div class="col text-start">
+                        <b>Auktionswerk</b>
+                    </div>
+                </div>
+            {% endif %}
+            <div class="px-1 match-list-items">
+                {% for match in matches %}
+                    {% set detail_url = url_for('match', match_id=match.match_id, rating=rating, sort=sort, bookmarked=bookmarked, search=search, image_weight=image_weight) %}
+                    {% set return_url = url_for('match_list', page=page, rating=rating, sort=sort, bookmarked=bookmarked, search=search, image_weight=image_weight) %}
+                    {% set lost_dimensions = dimensions_label(match.lost_artwork) %}
+                    {% set auction_dimensions = dimensions_label(match.auction_artwork) %}
+                    {% set auction_artist = auction_artist_label(match.auction_artwork) %}
+                    {% set auction_image_url = url_for('db_image_file', image_file_id=match.best_image_file_id) if match.best_image_file_id else url_for('db_image_auction', artwork_id=match.auction_artwork.auction_artwork_id) %}
+                    {% set has_auction_image = match.best_image_file_id or match.auction_artwork.image_paths|length > 0 %}
+                    <div class="match-list-item-shell">
+                        <div class="container-fluid p-2 match-list-item"
+                             role="link"
+                             tabindex="0"
+                             data-href="{{ detail_url }}"
+                             aria-label="Details zu diesem Match öffnen">
+                            <div class="row g-2 align-items-center d-none d-md-flex match-list-desktop-row">
+                                <div class="col text-end d-flex flex-column justify-content-center overflow-hidden">
+                                    <ul class="list-unstyled my-0 match-list-overview">
+                                        <li class="text-truncate"><b>{% if match.lost_artwork.title %}{{ match.lost_artwork.title }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}</b></li>
+                                        <li class="text-truncate">
+                                            {% if match.lost_artwork.artists|length > 0 %}
+                                                {% for artist in match.lost_artwork.artists %}{{ artist.complete_name }}{% if not loop.last %},{% endif %} {% endfor %}
+                                            {% else %}
+                                                <i class="text-muted">Unbekannt</i>
+                                            {% endif %}
+                                        </li>
+                                        <li class="text-truncate">{% if match.lost_artwork.dating %}{{ match.lost_artwork.dating }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}</li>
+                                        <li class="text-truncate">{% if lost_dimensions %}{{ lost_dimensions }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}</li>
+                                        <li class="text-truncate">
+                                            {% if match.lost_artwork.material_labels|length > 0 %}
+                                                {% for material in match.lost_artwork.material_labels %}{{ material }}{% if not loop.last %},{% endif %} {% endfor %}
+                                            {% else %}
+                                                <i class="text-muted">Unbekannt</i>
+                                            {% endif %}
+                                        </li>
+                                        <li class="text-truncate">
+                                            {% if match.lost_artwork.technique_labels|length > 0 %}
+                                                {% for technique in match.lost_artwork.technique_labels %}{{ technique }}{% if not loop.last %},{% endif %} {% endfor %}
+                                            {% else %}
+                                                <i class="text-muted">Unbekannt</i>
+                                            {% endif %}
+                                        </li>
+                                    </ul>
+                                </div>
+                                <div class="col-2">
+                                    <div class="d-flex h-100 justify-content-stretch align-items-center match-list-image-container">
+                                        <div class="text-center">
+                                            {% if match.lost_artwork.image_paths|length > 0 %}
+                                                <div class="zoom-wrap match-list-zoom" data-zoom="2.5">
+                                                    <img src="{{ url_for('db_image_lost', artwork_id=match.lost_artwork.lost_artwork_id) }}"
+                                                         data-zoom-src="{{ url_for('db_image_lost', artwork_id=match.lost_artwork.lost_artwork_id) }}"
+                                                         alt="Abbildung Verlorenes Werk"
+                                                         width=""
+                                                         height=""
+                                                         class="img-fluid match-list-image" />
+                                                    <div class="zoom-lens"></div>
+                                                </div>
+                                            {% else %}
+                                                <i class="text-muted">Kein Bild vorhanden</i>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-1 text-center match-list-score-column">
+                                    <div class="d-flex flex-column h-100 justify-content-center match-score-panel match-list-score-panel">
+                                        {{ score_progress_stack(match, image_weight) }}
+                                        <form class="match-list-discard-form mt-2"
+                                              method="post"
+                                              action="{{ url_for('api_match_discard') }}">
+                                            <input type="hidden" name="match-id" value="{{ match.match_id }}" />
+                                            <input type="hidden" name="lost-artwork-id" value="{{ match.lost_artwork_id }}" />
+                                            <input type="hidden" name="auction-artwork-id" value="{{ match.auction_artwork_id }}" />
+                                            {% if rating is not none %}<input type="hidden" name="rating" value="{{ rating }}" />{% endif %}
+                                            {% if sort is not none %}<input type="hidden" name="sort" value="{{ sort }}" />{% endif %}
+                                            {% if bookmarked is not none %}<input type="hidden" name="bookmarked" value="{{ bookmarked }}" />{% endif %}
+                                            {% if search %}<input type="hidden" name="search" value="{{ search }}" />{% endif %}
+                                            <input type="hidden" name="image_weight" value="{{ image_weight }}" />
+                                            <input type="hidden" name="return-url" value="{{ return_url }}" />
+                                            <button class="btn btn-danger btn-sm match-list-discard-button"
+                                                    type="submit"
+                                                    aria-label="Match verwerfen"
+                                                    title="Match verwerfen">
+                                                <i class="bi bi-trash" aria-hidden="true"></i>
+                                            </button>
+                                        </form>
+                                    </div>
+                                </div>
+                                <div class="col-2">
+                                    <div class="d-flex h-100 justify-content-stretch align-items-center match-list-image-container">
+                                        <div class="text-center">
+                                            {% if has_auction_image %}
+                                                <div class="zoom-wrap match-list-zoom" data-zoom="2.5">
+                                                    <img src="{{ auction_image_url }}"
+                                                         data-zoom-src="{{ auction_image_url }}"
+                                                         alt="Abbildung Auktionswerk"
+                                                         width=""
+                                                         height=""
+                                                         class="img-fluid match-list-image" />
+                                                    <div class="zoom-lens"></div>
+                                                </div>
+                                            {% else %}
+                                                <i class="text-muted">Kein Bild vorhanden</i>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col d-flex flex-column justify-content-center overflow-hidden">
+                                    <ul class="list-unstyled my-0 match-list-overview">
+                                        <li class="text-truncate"><b>{% if match.auction_artwork.title %}{{ match.auction_artwork.title }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}</b></li>
+                                        <li class="text-truncate">{% if auction_artist %}{{ auction_artist }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}</li>
+                                        <li class="text-truncate">{% if match.auction_artwork.dating %}{{ match.auction_artwork.dating }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}</li>
+                                        <li class="text-truncate">{% if auction_dimensions %}{{ auction_dimensions }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}</li>
+                                        <li class="text-truncate">
+                                            {% if match.auction_artwork.material_labels|length > 0 %}
+                                                {% for material in match.auction_artwork.material_labels %}{{ material }}{% if not loop.last %},{% endif %} {% endfor %}
+                                            {% else %}
+                                                <i class="text-muted">Unbekannt</i>
+                                            {% endif %}
+                                        </li>
+                                        <li class="text-truncate">
+                                            {% if match.auction_artwork.technique_labels|length > 0 %}
+                                                {% for technique in match.auction_artwork.technique_labels %}{{ technique }}{% if not loop.last %},{% endif %} {% endfor %}
+                                            {% else %}
+                                                <i class="text-muted">Unbekannt</i>
+                                            {% endif %}
+                                        </li>
+                                    </ul>
+                                </div>
+                            </div>
+                            <div class="match-list-mobile-card d-md-none">
+                                <div class="match-list-mobile-title-row">
+                                    <span class="match-list-mobile-label">Verlorenes Werk</span>
+                                    <b>{% if match.lost_artwork.title %}{{ match.lost_artwork.title }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}</b>
+                                </div>
+                                <div class="match-list-mobile-title-row">
+                                    <span class="match-list-mobile-label">Auktionswerk</span>
+                                    <b>{% if match.auction_artwork.title %}{{ match.auction_artwork.title }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}</b>
+                                </div>
+                                <div class="row g-2 match-list-mobile-images-row">
+                                    <div class="col-6">
+                                        <div class="match-list-mobile-image-cell h-100">
+                                            <span class="match-list-mobile-label">Verlorenes Werk</span>
+                                            {% if match.lost_artwork.image_paths|length > 0 %}
+                                                <div class="zoom-wrap match-list-zoom" data-zoom="2.5">
+                                                    <img src="{{ url_for('db_image_lost', artwork_id=match.lost_artwork.lost_artwork_id) }}"
+                                                         data-zoom-src="{{ url_for('db_image_lost', artwork_id=match.lost_artwork.lost_artwork_id) }}"
+                                                         alt="Abbildung Verlorenes Werk"
+                                                         width=""
+                                                         height=""
+                                                         class="img-fluid match-list-image match-list-mobile-image" />
+                                                    <div class="zoom-lens"></div>
+                                                </div>
+                                            {% else %}
+                                                <i class="text-muted">Kein Bild vorhanden</i>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="match-list-mobile-image-cell h-100">
+                                            <span class="match-list-mobile-label">Auktionswerk</span>
+                                            {% if has_auction_image %}
+                                                <div class="zoom-wrap match-list-zoom" data-zoom="2.5">
+                                                    <img src="{{ auction_image_url }}"
+                                                         data-zoom-src="{{ auction_image_url }}"
+                                                         alt="Abbildung Auktionswerk"
+                                                         width=""
+                                                         height=""
+                                                         class="img-fluid match-list-image match-list-mobile-image" />
+                                                    <div class="zoom-lens"></div>
+                                                </div>
+                                            {% else %}
+                                                <i class="text-muted">Kein Bild vorhanden</i>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="match-list-mobile-metadata-row">
+                                    <table class="table table-sm table-bordered align-middle mb-0 match-list-mobile-metadata-table">
+                                        <thead>
+                                            <tr>
+                                                <th scope="col">Merkmal</th>
+                                                <th scope="col">Verloren</th>
+                                                <th scope="col">Auktion</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <tr>
+                                                <th scope="row">Score</th>
+                                                <td colspan="2">
+                                                    <div class="match-list-mobile-score">
+                                                        {{ score_progress_stack(match, image_weight) }}
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <th scope="row">Künstler/in</th>
+                                                <td>
+                                                    {% if match.lost_artwork.artists|length > 0 %}
+                                                        {% for artist in match.lost_artwork.artists %}{{ artist.complete_name }}{% if not loop.last %}, {% endif %}{% endfor %}
+                                                    {% else %}
+                                                        <i class="text-muted">Unbekannt</i>
+                                                    {% endif %}
+                                                </td>
+                                                <td>{% if auction_artist %}{{ auction_artist }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}</td>
+                                            </tr>
+                                            <tr>
+                                                <th scope="row">Datierung</th>
+                                                <td>{% if match.lost_artwork.dating %}{{ match.lost_artwork.dating }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}</td>
+                                                <td>{% if match.auction_artwork.dating %}{{ match.auction_artwork.dating }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}</td>
+                                            </tr>
+                                            <tr>
+                                                <th scope="row">Maße</th>
+                                                <td>{% if lost_dimensions %}{{ lost_dimensions }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}</td>
+                                                <td>{% if auction_dimensions %}{{ auction_dimensions }}{% else %}<i class="text-muted">Unbekannt</i>{% endif %}</td>
+                                            </tr>
+                                            <tr>
+                                                <th scope="row">Material</th>
+                                                <td>
+                                                    {% if match.lost_artwork.material_labels|length > 0 %}
+                                                        {% for material in match.lost_artwork.material_labels %}{{ material }}{% if not loop.last %}, {% endif %}{% endfor %}
+                                                    {% else %}
+                                                        <i class="text-muted">Unbekannt</i>
+                                                    {% endif %}
+                                                </td>
+                                                <td>
+                                                    {% if match.auction_artwork.material_labels|length > 0 %}
+                                                        {% for material in match.auction_artwork.material_labels %}{{ material }}{% if not loop.last %}, {% endif %}{% endfor %}
+                                                    {% else %}
+                                                        <i class="text-muted">Unbekannt</i>
+                                                    {% endif %}
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <th scope="row">Technik</th>
+                                                <td>
+                                                    {% if match.lost_artwork.technique_labels|length > 0 %}
+                                                        {% for technique in match.lost_artwork.technique_labels %}{{ technique }}{% if not loop.last %}, {% endif %}{% endfor %}
+                                                    {% else %}
+                                                        <i class="text-muted">Unbekannt</i>
+                                                    {% endif %}
+                                                </td>
+                                                <td>
+                                                    {% if match.auction_artwork.technique_labels|length > 0 %}
+                                                        {% for technique in match.auction_artwork.technique_labels %}{{ technique }}{% if not loop.last %}, {% endif %}{% endfor %}
+                                                    {% else %}
+                                                        <i class="text-muted">Unbekannt</i>
+                                                    {% endif %}
+                                                </td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <div class="match-list-mobile-actions-row">
+                                    <a class="btn btn-outline-primary btn-sm match-info-button d-inline-flex align-items-center justify-content-center"
+                                       role="button"
+                                       href="{{ detail_url }}">
+                                        <i class="bi bi-info-circle me-1" aria-hidden="true"></i>Details
+                                    </a>
+                                    <form class="match-list-discard-form m-0"
+                                          method="post"
+                                          action="{{ url_for('api_match_discard') }}">
+                                        <input type="hidden" name="match-id" value="{{ match.match_id }}" />
+                                        <input type="hidden" name="lost-artwork-id" value="{{ match.lost_artwork_id }}" />
+                                        <input type="hidden" name="auction-artwork-id" value="{{ match.auction_artwork_id }}" />
+                                        {% if rating is not none %}<input type="hidden" name="rating" value="{{ rating }}" />{% endif %}
+                                        {% if sort is not none %}<input type="hidden" name="sort" value="{{ sort }}" />{% endif %}
+                                        {% if bookmarked is not none %}<input type="hidden" name="bookmarked" value="{{ bookmarked }}" />{% endif %}
+                                        {% if search %}<input type="hidden" name="search" value="{{ search }}" />{% endif %}
+                                        <input type="hidden" name="image_weight" value="{{ image_weight }}" />
+                                        <input type="hidden" name="return-url" value="{{ return_url }}" />
+                                        <button class="btn btn-danger btn-sm match-list-discard-button"
+                                                type="submit"
+                                                aria-label="Match verwerfen"
+                                                title="Match verwerfen">
+                                            <i class="bi bi-trash" aria-hidden="true"></i>
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                            <a class="btn btn-outline-primary btn-sm match-info-button match-list-desktop-detail-button d-none d-md-inline-flex align-items-center"
+                               role="button"
+                               href="{{ detail_url }}">
+                                <i class="bi bi-info-circle me-1" aria-hidden="true"></i>Details
+                            </a>
+                        </div>
+                    </div>
+                {% endfor %}
+                {% if matches|length == 0 %}
+                    <div class="match-empty-state">
+                        Keine Elemente vorhanden
+                    </div>
+                {% endif %}
+            </div>
+            <div class="container my-4">
+                <ul class="pagination justify-content-center">
+                    {% if page - 1 > 0 %}
+                        <li class="page-item">
+                            <a class="page-link"
+                               href="{{ url_for('match_list', page=(page - 1), rating=rating, sort=sort, bookmarked=bookmarked, search=search, image_weight=image_weight) }}">
+                                <i class="bi bi-arrow-left" aria-hidden="true"></i>
+                            </a>
+                        </li>
+                    {% endif %}
+                    {% for i in range(-2, 2) %}
+                        {% if page + i > 0 and page + i <= max_page %}
+                            <li class="page-item {% if page + i == page %}active{% endif %}">
+                                <a class="page-link"
+                                   href="{{ url_for('match_list', page=(page + i), rating=rating, sort=sort, bookmarked=bookmarked, search=search, image_weight=image_weight) }}">{{ page + i }}</a>
+                            </li>
+                        {% endif %}
+                    {% endfor %}
+                    {% if page + 1 <= max_page %}
+                        <li class="page-item">
+                            <a class="page-link"
+                               href="{{ url_for('match_list', page=(page + 1), rating=rating, sort=sort, bookmarked=bookmarked, search=search, image_weight=image_weight) }}">
+                                <i class="bi bi-arrow-right" aria-hidden="true"></i>
+                            </a>
+                        </li>
+                    {% endif %}
+                </ul>
+            </div>
+        </div>
+    </div>
+{% endblock content %}

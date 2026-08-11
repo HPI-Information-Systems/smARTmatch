@@ -1,0 +1,6 @@
+pg-data/
+images/*
+!images/pipeline_test_set/
+!images/pipeline_test_set/*.jpg
+*.dump
+*.log

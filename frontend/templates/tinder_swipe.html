@@ -1,0 +1,745 @@
+{% extends "base.html" %}
+{% block content %}
+    {% from "_score_progress_stack.html" import score_progress_stack %}
+    <link rel="prefetch" href="{{ next_url }}" />
+    {% if next_match %}
+        <link rel="preload"
+              href="{{ url_for('db_image_lost',    artwork_id=next_match.lost_artwork_id) }}"
+              as="image">
+        <link rel="preload"
+              href="{{ url_for('db_image_auction', artwork_id=next_match.auction_artwork_id) }}"
+              as="image">
+    {% endif %}
+    <style>
+#frontend-main-content {
+    padding: 0 !important;
+    max-width: 100% !important;
+}
+
+.tinder-viewport {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: .6rem .6rem 0;
+    box-sizing: border-box;
+}
+
+/* ── card stack ──────────────────────────────────────────── */
+.card-stack {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    margin-bottom: .6rem;
+}
+
+/* ── image slot (shared by main card + preview) ──────────── */
+.card-img-slot {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    overflow: hidden;
+    background: #dde1e5;
+}
+
+.card-img-slot img {
+    display: block;
+    /* fallback before JS pan-setup runs — cover ensures no gray bars */
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+/* ── pan keyframes ───────────────────────────────────────── */
+@keyframes pan-lr {
+    0%, 100% { transform: translateX(0); }
+    50%       { transform: translateX(var(--pan-end, 0px)); }
+}
+@keyframes pan-tb {
+    0%, 100% { transform: translateY(0); }
+    50%       { transform: translateY(var(--pan-end, 0px)); }
+}
+
+/* ── preview card ────────────────────────────────────────── */
+.card-preview {
+    position: absolute;
+    inset: 0;
+    border-radius: 14px;
+    overflow: hidden;
+    transform: scale(0.95) translateY(8px);
+    display: flex;
+    flex-direction: column;
+    background: #fff;
+    box-shadow: 0 1px 6px rgba(0,0,0,.1);
+}
+
+.card-preview .card-img-slot img {
+    filter: brightness(0.85) saturate(0.7);
+}
+
+.card-preview .card-images {
+    background: #dde1e5;
+}
+
+/* ── swipeable card wrapper ──────────────────────────────── */
+.swipe-card-wrap {
+    position: absolute;
+    inset: 0;
+    transform-style: preserve-3d;
+    will-change: transform;
+    cursor: grab;
+}
+.swipe-card-wrap:active { cursor: grabbing; }
+
+/* 3D flip container */
+.card-inner {
+    position: absolute;
+    inset: 0;
+    transform-style: preserve-3d;
+    transition: transform 0.42s cubic-bezier(.4,0,.2,1);
+}
+.card-inner.flipped { transform: rotateY(180deg); }
+
+/* shared face base */
+.card-face {
+    position: absolute;
+    inset: 0;
+    border-radius: 14px;
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+    background: #fff;
+    box-shadow: 0 3px 18px rgba(0,0,0,.13), 0 0 0 1px rgba(0,0,0,.06);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.card-back-face { transform: rotateY(180deg); }
+
+/* ── front face ──────────────────────────────────────────── */
+.card-images {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 0;
+    min-height: 0;
+    gap: 2px;
+    background: #dde1e5;
+}
+
+.card-img-label {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    background: rgba(0,0,0,.5);
+    color: #fff;
+    font-size: .6rem;
+    text-align: center;
+    padding: 2px 4px;
+    letter-spacing: .04em;
+    pointer-events: none;
+}
+
+.card-scores {
+    flex: 0 0 auto;
+    padding: .4rem .65rem .25rem;
+    border-top: 1px solid #eee;
+}
+
+.card-scores .score-progress-stack { gap: .15rem !important; }
+.card-scores .score-progress-label { font-size: .65rem !important; }
+.card-scores .match-score-progress  { height: 5px !important; }
+
+.flip-hint {
+    flex: 0 0 auto;
+    text-align: center;
+    font-size: .6rem;
+    color: #aaa;
+    padding: .2rem 0 .3rem;
+    letter-spacing: .04em;
+}
+
+/* ── back face ───────────────────────────────────────────── */
+.card-back-header {
+    flex: 0 0 auto;
+    text-align: center;
+    font-size: .65rem;
+    font-variant: small-caps;
+    letter-spacing: .07em;
+    color: #888;
+    padding: .35rem 0 .2rem;
+    border-bottom: 1px solid #eee;
+}
+
+.card-attrs {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+    padding: 0 .45rem .4rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.attr-row {
+    padding: .3rem .3rem;
+}
+.attr-row:nth-child(odd)  { background: #f7f7f7; }
+.attr-row:nth-child(even) { background: #efefef; }
+
+.attr-label {
+    text-align: center;
+    font-size: .72rem;
+    font-variant: small-caps;
+    letter-spacing: .06em;
+    color: #777;
+    margin-bottom: .1rem;
+    font-weight: 600;
+}
+
+.attr-values {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: .2rem;
+    font-size: .75rem;
+    align-items: start;
+}
+
+.attr-lost    { text-align: left;   word-break: break-word; }
+.attr-sim     { text-align: center; white-space: nowrap; color: #e5532f; font-weight: 600; min-width: 3rem; }
+.attr-auction { text-align: right;  word-break: break-word; }
+
+/* ── swipe overlays ──────────────────────────────────────── */
+.swipe-overlay {
+    position: absolute;
+    inset: 0;
+    border-radius: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 5.5rem;
+    font-weight: 900;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 20;
+}
+.swipe-overlay-accept  { color: #18a558; }
+.swipe-overlay-discard { color: #dc3545; }
+
+/* ── action bar ──────────────────────────────────────────── */
+.swipe-actions {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3rem;
+    padding: .5rem 1rem .75rem;
+}
+
+.swipe-action-btn {
+    width: 58px;
+    height: 58px;
+    border-radius: 50%;
+    border: 2px solid;
+    background: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.5rem;
+    cursor: pointer;
+    flex-shrink: 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,.1);
+    transition: transform .12s, box-shadow .12s;
+}
+.swipe-action-btn:active { transform: scale(.88); box-shadow: none; }
+.swipe-action-discard { border-color: #dc3545; color: #dc3545; }
+.swipe-action-accept  { border-color: #18a558; color: #18a558; }
+
+.frontend-footer { display: none !important; }
+    </style>
+    <div class="tinder-viewport">
+        <div class="card-stack">
+            {# ── preview card (next match, sits behind) ── #}
+            {% if next_match %}
+                <div class="card-preview"
+                     id="card-preview"
+                     aria-hidden="true"
+                     style="opacity:0">
+                    <div class="card-images" style="flex:1 1 0;min-height:0;">
+                        <div class="card-img-slot">
+                            <img src="{{ url_for('db_image_lost', artwork_id=next_match.lost_artwork_id) }}"
+                                 alt="Verlorenes Werk"
+                                 width="1"
+                                 height="1"
+                                 draggable="false"
+                                 onload="previewImgLoaded(this)"
+                                 onerror="previewImgError(this)">
+                            <span class="card-img-label">Verlorenes Werk</span>
+                        </div>
+                        <div class="card-img-slot">
+                            <img src="{{ url_for('db_image_auction', artwork_id=next_match.auction_artwork_id) }}"
+                                 alt="Auktionswerk"
+                                 width="1"
+                                 height="1"
+                                 draggable="false"
+                                 onload="previewImgLoaded(this)"
+                                 onerror="previewImgError(this)">
+                            <span class="card-img-label">Auktionswerk</span>
+                        </div>
+                    </div>
+                    <div class="card-scores" style="filter:brightness(0.85) saturate(0.7)">
+                        {{ score_progress_stack(next_match, image_weight=50) }}
+                    </div>
+                    <div class="flip-hint" style="filter:brightness(0.85)">Tippen für Details ↺</div>
+                </div>
+            {% else %}
+                <div class="card-preview"
+                     aria-hidden="true"
+                     style="align-items:center;
+                            justify-content:center">
+                    <span style="font-size:.75rem;color:#aaa;letter-spacing:.04em">Keine weiteren Matches</span>
+                </div>
+            {% endif %}
+            {# ── swipeable card ── #}
+            <div class="swipe-card-wrap" id="swipe-card-wrap">
+                <div class="swipe-overlay swipe-overlay-accept"
+                     id="overlay-accept"
+                     aria-hidden="true">✓</div>
+                <div class="swipe-overlay swipe-overlay-discard"
+                     id="overlay-discard"
+                     aria-hidden="true">✕</div>
+                <div class="card-inner" id="card-inner">
+                    {# FRONT #}
+                    <div class="card-face">
+                        <div class="card-images">
+                            <div class="card-img-slot">
+                                {% if match.lost_artwork %}
+                                    <img src="{{ url_for('db_image_lost', artwork_id=match.lost_artwork_id) }}"
+                                         alt="Verlorenes Werk"
+                                         width="1"
+                                         height="1"
+                                         draggable="false"
+                                         onload="setupPan(this)"
+                                         onerror="this.style.display='none'">
+                                {% endif %}
+                                <span class="card-img-label">Verlorenes Werk</span>
+                            </div>
+                            <div class="card-img-slot">
+                                {% if match.auction_artwork %}
+                                    <img src="{{ url_for('db_image_auction', artwork_id=match.auction_artwork_id) }}"
+                                         alt="Auktionswerk"
+                                         width="1"
+                                         height="1"
+                                         draggable="false"
+                                         onload="setupPan(this)"
+                                         onerror="this.style.display='none'">
+                                {% endif %}
+                                <span class="card-img-label">Auktionswerk</span>
+                            </div>
+                        </div>
+                        <div class="card-scores">{{ score_progress_stack(match, image_weight=50) }}</div>
+                        <div class="flip-hint">Tippen für Details ↺</div>
+                    </div>
+                    {# BACK #}
+                    <div class="card-face card-back-face">
+                        <div class="card-back-header">Detailvergleich ↺</div>
+                        <div class="card-attrs">
+                            <div class="attr-row">
+                                <div class="attr-label">Titel</div>
+                                <div class="attr-values">
+                                    <div class="attr-lost">
+                                        {% if match.lost_artwork and match.lost_artwork.title %}
+                                            {{ match.lost_artwork.title }}
+                                        {% else %}
+                                            <i class="text-muted">–</i>
+                                        {% endif %}
+                                    </div>
+                                    <div class="attr-sim">{{ score_percent(match.match_scores.title_sim if match.match_scores else none) }}</div>
+                                    <div class="attr-auction">
+                                        {% if match.auction_artwork and match.auction_artwork.title %}
+                                            {{ match.auction_artwork.title }}
+                                        {% else %}
+                                            <i class="text-muted">–</i>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="attr-row">
+                                <div class="attr-label">Künstler*in</div>
+                                <div class="attr-values">
+                                    <div class="attr-lost">
+                                        {% if match.lost_artwork and match.lost_artwork.artists|length > 0 %}
+                                            {% for a in match.lost_artwork.artists %}
+                                                {{ a.complete_name }}
+                                                {% if not loop.last %},{% endif %}
+                                            {% endfor %}
+                                        {% else %}
+                                            <i class="text-muted">–</i>
+                                        {% endif %}
+                                    </div>
+                                    <div class="attr-sim">{{ score_percent(match.match_scores.artist_sim if match.match_scores else none) }}</div>
+                                    <div class="attr-auction">
+                                        {% if match.auction_artwork and match.auction_artwork.artist_raw_data %}
+                                            {{ match.auction_artwork.artist_raw_data }}
+                                        {% else %}
+                                            <i class="text-muted">–</i>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="attr-row">
+                                <div class="attr-label">Datierung</div>
+                                <div class="attr-values">
+                                    <div class="attr-lost">
+                                        {% if match.lost_artwork and match.lost_artwork.dating %}
+                                            {{ match.lost_artwork.dating }}
+                                        {% else %}
+                                            <i class="text-muted">–</i>
+                                        {% endif %}
+                                    </div>
+                                    <div class="attr-sim">{{ score_percent(match.match_scores.dating_sim if match.match_scores else none) }}</div>
+                                    <div class="attr-auction">
+                                        {% if match.auction_artwork and match.auction_artwork.dating %}
+                                            {{ match.auction_artwork.dating }}
+                                        {% else %}
+                                            <i class="text-muted">–</i>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="attr-row">
+                                <div class="attr-label">Maße</div>
+                                <div class="attr-values">
+                                    <div class="attr-lost">
+                                        {% if match.lost_artwork and match.lost_artwork.width and match.lost_artwork.height %}
+                                            {{ match.lost_artwork.width }} × {{ match.lost_artwork.height }} cm
+                                        {% else %}
+                                            <i class="text-muted">–</i>
+                                        {% endif %}
+                                    </div>
+                                    <div class="attr-sim">{{ score_percent(match.match_scores.dimensions_sim if match.match_scores else none) }}</div>
+                                    <div class="attr-auction">
+                                        {% if match.auction_artwork and match.auction_artwork.width and match.auction_artwork.height %}
+                                            {{ match.auction_artwork.width }} × {{ match.auction_artwork.height }} cm
+                                        {% else %}
+                                            <i class="text-muted">–</i>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="attr-row">
+                                <div class="attr-label">Material</div>
+                                <div class="attr-values">
+                                    <div class="attr-lost">
+                                        {% if match.lost_artwork and match.lost_artwork.material_labels|length > 0 %}
+                                            {% for m in match.lost_artwork.material_labels %}
+                                                {{ m }}
+                                                {% if not loop.last %},{% endif %}
+                                            {% endfor %}
+                                        {% else %}
+                                            <i class="text-muted">–</i>
+                                        {% endif %}
+                                    </div>
+                                    <div class="attr-sim">{{ score_percent(match.match_scores.material_sim if match.match_scores else none) }}</div>
+                                    <div class="attr-auction">
+                                        {% if match.auction_artwork and match.auction_artwork.material_labels|length > 0 %}
+                                            {% for m in match.auction_artwork.material_labels %}
+                                                {{ m }}
+                                                {% if not loop.last %},{% endif %}
+                                            {% endfor %}
+                                        {% else %}
+                                            <i class="text-muted">–</i>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="attr-row">
+                                <div class="attr-label">Technik</div>
+                                <div class="attr-values">
+                                    <div class="attr-lost">
+                                        {% if match.lost_artwork and match.lost_artwork.technique_labels|length > 0 %}
+                                            {% for t in match.lost_artwork.technique_labels %}
+                                                {{ t }}
+                                                {% if not loop.last %},{% endif %}
+                                            {% endfor %}
+                                        {% else %}
+                                            <i class="text-muted">–</i>
+                                        {% endif %}
+                                    </div>
+                                    <div class="attr-sim">{{ score_percent(match.match_scores.technique_sim if match.match_scores else none) }}</div>
+                                    <div class="attr-auction">
+                                        {% if match.auction_artwork and match.auction_artwork.technique_labels|length > 0 %}
+                                            {% for t in match.auction_artwork.technique_labels %}
+                                                {{ t }}
+                                                {% if not loop.last %},{% endif %}
+                                            {% endfor %}
+                                        {% else %}
+                                            <i class="text-muted">–</i>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {# /card-inner #}
+            </div>
+            {# /swipe-card-wrap #}
+        </div>
+        {# /card-stack #}
+        <div class="swipe-actions">
+            <button class="swipe-action-btn swipe-action-discard"
+                    id="btn-discard"
+                    type="button"
+                    aria-label="Verwerfen">
+                <i class="bi bi-x-lg" aria-hidden="true"></i>
+            </button>
+            <button class="swipe-action-btn swipe-action-accept"
+                    id="btn-accept"
+                    type="button"
+                    aria-label="Akzeptieren">
+                <i class="bi bi-check-lg" aria-hidden="true"></i>
+            </button>
+        </div>
+    </div>
+    <script>
+/* ── pan animation setup ─────────────────────────────────────────────────────
+   PAN_DURATION is fixed so all images animate in sync.
+   _pageStart gives a shared phase reference — all images get the same
+   animation-delay offset so they appear to have always been running together. */
+const PAN_DURATION = 14; /* seconds per full cycle — slow, gentle pan */
+const _pageStart   = Date.now();
+
+function _applyPan(img, slotW, slotH) {
+    const nw = img.naturalWidth;
+    const nh = img.naturalHeight;
+    if (!nw || !nh) return;
+
+    const landscape = (nw / nh) > (slotW / slotH);
+
+    img.style.objectFit  = 'none';
+    img.style.position   = 'absolute';
+    img.style.top        = '0';
+    img.style.left       = '0';
+    img.style.animation  = 'none';
+
+    if (landscape) {
+        img.style.height   = '100%';
+        img.style.width    = 'auto';
+        img.style.maxWidth = 'none';
+    } else {
+        img.style.width     = '100%';
+        img.style.height    = 'auto';
+        img.style.maxHeight = 'none';
+    }
+
+    requestAnimationFrame(() => {
+        const overX = img.offsetWidth  - slotW;
+        const overY = img.offsetHeight - slotH;
+        /* Negative delay syncs to a shared page-load clock so all cards
+           appear to animate together. */
+        const elapsed = (Date.now() - _pageStart) / 1000;
+        const delay   = -(elapsed % PAN_DURATION);
+        if (overX > 4) {
+            img.style.setProperty('--pan-end', `-${overX}px`);
+            img.style.animation = `pan-lr ${PAN_DURATION}s ease-in-out ${delay}s infinite`;
+        } else if (overY > 4) {
+            img.style.setProperty('--pan-end', `-${overY}px`);
+            img.style.animation = `pan-tb ${PAN_DURATION}s ease-in-out ${delay}s infinite`;
+        }
+    });
+}
+
+function setupPan(img) {
+    const slot = img.parentElement;
+    if (!slot) return;
+    const slotW = slot.clientWidth;
+    const slotH = slot.clientHeight;
+    if (slotW < 4 || slotH < 4) {
+        requestAnimationFrame(() => setupPan(img));
+        return;
+    }
+    _applyPan(img, slotW, slotH);
+}
+
+/* ── preview card management ─────────────────────────────────────────────── */
+let _previewCount = 0;
+
+function _showPreview() {
+    const p = document.getElementById('card-preview');
+    if (p) { p.style.transition = 'opacity 0.25s ease'; p.style.opacity = '1'; }
+}
+
+function previewImgLoaded(img) {
+    if (img._previewHandled) return;
+    img._previewHandled = true;
+    setupPan(img);
+    /* Two frames: one for setupPan's inner rAF (measure + apply animation),
+       one more so the browser paints the animation frame before we reveal the card. */
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (++_previewCount >= 2) _showPreview();
+    }));
+}
+
+function previewImgError(img) {
+    if (img._previewHandled) return;
+    img._previewHandled = true;
+    if (++_previewCount >= 2) _showPreview();
+}
+
+/* ── swipe + flip logic ──────────────────────────────────────────────────── */
+(function () {
+    const wrap      = document.getElementById('swipe-card-wrap');
+    const inner     = document.getElementById('card-inner');
+    const overlayOk = document.getElementById('overlay-accept');
+    const overlayNo = document.getElementById('overlay-discard');
+    const matchId   = {{ match.match_id | tojson }};
+    const nextUrl   = {{ next_url | tojson }};
+
+    const THRESHOLD  = 110;
+    const ANGLE_LOCK = 28;
+
+    let startX = 0, startY = 0, deltaX = 0;
+    let touching    = false;
+    let swipeLocked = false;
+    let cancelled   = false;
+    let didSwipe    = false;
+    let flipped     = false;
+
+    function setTransform(dx) {
+        wrap.style.transform = `translateX(${dx}px) rotateZ(${dx * 0.033}deg)`;
+        const r = Math.min(Math.abs(dx) / THRESHOLD, 1);
+        overlayOk.style.opacity = dx > 0 ? r : 0;
+        overlayNo.style.opacity = dx < 0 ? r : 0;
+    }
+
+    function resetSwipe() {
+        wrap.style.transition = 'transform 0.3s ease';
+        wrap.style.transform  = '';
+        overlayOk.style.opacity = 0;
+        overlayNo.style.opacity = 0;
+        setTimeout(() => { wrap.style.transition = ''; }, 310);
+    }
+
+    function commit(accepted) {
+        didSwipe = true;
+        const tx  = accepted ? window.innerWidth * 1.3 : -window.innerWidth * 1.3;
+        const rot = accepted ? 22 : -22;
+        wrap.style.transition = 'transform 0.22s ease';
+        wrap.style.transform  = `translateX(${tx}px) rotateZ(${rot}deg)`;
+        fetch(accepted ? '/api/match/accept' : '/api/match/discard', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body:    new URLSearchParams({ 'match-id': matchId, 'return-url': nextUrl }),
+        });
+        setTimeout(() => { window.location.href = nextUrl; }, 215);
+    }
+
+    /* click → flip */
+    wrap.addEventListener('click', () => {
+        if (didSwipe) { didSwipe = false; return; }
+        flipped = !flipped;
+        inner.classList.toggle('flipped', flipped);
+    });
+
+    /* touch swipe */
+    wrap.addEventListener('touchstart', e => {
+        startX = e.touches[0].clientX;
+        startY = e.touches[0].clientY;
+        deltaX = 0;
+        touching = true; swipeLocked = false; cancelled = false;
+        wrap.style.transition = '';
+    }, { passive: true });
+
+    wrap.addEventListener('touchmove', e => {
+        if (!touching || cancelled) return;
+        const dx = e.touches[0].clientX - startX;
+        const dy = e.touches[0].clientY - startY;
+        if (!swipeLocked) {
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < 8) return;
+            const ang = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
+            if (ang > ANGLE_LOCK && ang < 180 - ANGLE_LOCK) { cancelled = true; return; }
+            swipeLocked = true;
+        }
+        e.preventDefault();
+        deltaX = dx;
+        setTransform(deltaX);
+    }, { passive: false });
+
+    wrap.addEventListener('touchend', () => {
+        if (!touching) return;
+        touching = false;
+        if (!swipeLocked) return;
+        if      (deltaX >  THRESHOLD) commit(true);
+        else if (deltaX < -THRESHOLD) commit(false);
+        else                          resetSwipe();
+    });
+
+    wrap.addEventListener('touchcancel', () => { touching = false; resetSwipe(); });
+
+    /* mouse drag (devtools / desktop) */
+    wrap.addEventListener('mousedown', e => {
+        startX = e.clientX; startY = e.clientY;
+        deltaX = 0;
+        touching = true; swipeLocked = false; cancelled = false;
+        wrap.style.transition = '';
+        e.preventDefault();
+    });
+
+    window.addEventListener('mousemove', e => {
+        if (!touching || cancelled) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        if (!swipeLocked) {
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < 8) return;
+            const ang = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
+            if (ang > ANGLE_LOCK && ang < 180 - ANGLE_LOCK) { cancelled = true; return; }
+            swipeLocked = true;
+        }
+        deltaX = dx;
+        setTransform(deltaX);
+    });
+
+    window.addEventListener('mouseup', () => {
+        if (!touching) return;
+        touching = false;
+        if (!swipeLocked) return;
+        if      (deltaX >  THRESHOLD) commit(true);
+        else if (deltaX < -THRESHOLD) commit(false);
+        else                          resetSwipe();
+    });
+
+    /* buttons */
+    document.getElementById('btn-accept').addEventListener('click',  e => { e.stopPropagation(); commit(true); });
+    document.getElementById('btn-discard').addEventListener('click', e => { e.stopPropagation(); commit(false); });
+
+    /* ── fit viewport height ── */
+    const viewport = document.querySelector('.tinder-viewport');
+    function fitHeight() {
+        const header = document.querySelector('.site-header');
+        const used   = header ? header.getBoundingClientRect().height : 56;
+        viewport.style.height = (window.innerHeight - used) + 'px';
+    }
+    fitHeight();
+    window.addEventListener('resize', () => {
+        fitHeight();
+        /* re-run pan setup after resize changes container dimensions */
+        document.querySelectorAll('.card-img-slot img').forEach(img => {
+            if (img.complete && img.naturalWidth) requestAnimationFrame(() => setupPan(img));
+        });
+    });
+
+    /* For images already loaded before this script ran (from cache),
+       onload won't fire again — kick off setupPan / preview counting manually. */
+    document.querySelectorAll('.card-img-slot img').forEach(img => {
+        if (!img.complete) return;
+        const isPreview = !!img.closest('#card-preview');
+        if (isPreview) {
+            previewImgLoaded(img);
+        } else if (img.naturalWidth) {
+            requestAnimationFrame(() => setupPan(img));
+        }
+    });
+})();
+    </script>
+{% endblock content %}

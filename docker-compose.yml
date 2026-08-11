@@ -1,0 +1,88 @@
+services:
+  db:
+    image: postgres:16.6
+    restart: unless-stopped
+    shm_size: "1gb"
+    env_file:
+      - ${SMARTMATCH_ENV_FILE:-./.env.docker}
+    ports:
+      - "5434:5432"
+    volumes:
+      - smartmatch_pgdata:/var/lib/postgresql/data
+      - ./db/init-production:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  scrapers:
+    build:
+      context: .
+      dockerfile: scrapers/Dockerfile
+    restart: unless-stopped
+    stop_grace_period: 130s
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ${SMARTMATCH_ENV_FILE:-./.env.docker}
+    ports:
+      - "5555:5555"
+    volumes:
+      - ./db/images:/app/db/images
+    healthcheck:
+      test: ["CMD-SHELL", "supervisorctl -c /app/scrapers/supervisord.conf status scraper-dashboard | grep -q RUNNING && supervisorctl -c /app/scrapers/supervisord.conf status scraper-scheduler | grep -q RUNNING"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "200m"
+        max-file: "3"
+
+  matching_pipeline:
+    build:
+      context: .
+      dockerfile: matching_pipeline/Dockerfile
+    restart: unless-stopped
+    stop_grace_period: 160s
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ${SMARTMATCH_ENV_FILE:-./.env.docker}
+    gpus: all
+    volumes:
+      - ./db/images:/app/db/images
+      - ./cache/matching_pipeline:/app/cache
+      - ./cache/matching_pipeline/models:/root/.cache
+    logging:
+      driver: json-file
+      options:
+        max-size: "200m"
+        max-file: "3"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ${SMARTMATCH_ENV_FILE:-./.env.docker}
+    ports:
+      - "80:80"
+    volumes:
+      - ./db/images:/app/db/images
+      - ./cache:/app/cache
+      - ./frontend:/app/frontend
+
+
+volumes:
+  smartmatch_pgdata:

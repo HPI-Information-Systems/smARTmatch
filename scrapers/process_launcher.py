@@ -10,8 +10,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from shared.logging_adapter import get_logger
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_MAX_OUTSTANDING = 8
+logger = get_logger(__name__)
 
 
 class WorkerProcessLauncher:
@@ -69,6 +72,7 @@ class WorkerProcessLauncher:
         except Exception:
             with self._lock:
                 self._children.pop(request_id, None)
+            logger.exception("worker request=%s could not start", request_id)
             raise
 
         with self._lock:
@@ -87,6 +91,11 @@ class WorkerProcessLauncher:
                 self._children.pop(request_id, None)
             process.terminate()
             process.wait()
+            logger.exception(
+                "worker request=%s pid=%s could not start reaper",
+                request_id,
+                process.pid,
+            )
             raise OSError(f"Could not start scraper worker reaper: {exc}") from exc
         return {
             "request_id": request_id,
@@ -98,17 +107,12 @@ class WorkerProcessLauncher:
         return_code: int | str = "wait-error"
         try:
             return_code = process.wait()
-        except Exception as exc:
-            print(
-                f"[dashboard] worker request={request_id} pid={process.pid} "
-                f"wait failed: {exc}",
-                flush=True,
+        except Exception:
+            logger.exception(
+                "worker request=%s pid=%s wait failed", request_id, process.pid
             )
         finally:
             with self._lock:
                 self._children.pop(request_id, None)
-        print(
-            f"[dashboard] worker request={request_id} pid={process.pid} "
-            f"exited={return_code}",
-            flush=True,
-        )
+        log = logger.info if return_code == 0 else logger.error
+        log("worker request=%s pid=%s exited=%s", request_id, process.pid, return_code)

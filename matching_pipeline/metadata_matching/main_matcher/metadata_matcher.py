@@ -14,7 +14,6 @@ import logging
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from matching_pipeline.shared.logging_setup import configure_logging
 from matching_pipeline.shared.db import connect as db_connect
 from matching_pipeline.metadata_matching.similarity_functions.artist.count_confidence import (
     confidence_function as artist_confidence_function,
@@ -49,7 +48,6 @@ from matching_pipeline.metadata_matching.similarity_functions.title.matching_fun
     similarity_function as title_similarity_function,
 )
 
-configure_logging()  # Keeps direct module use consistent with scheduled entrypoints.
 logger = logging.getLogger(__name__)
 
 MATCHING_PROGRAM_ID = "1e3297fc-ee74-4498-a4d3-ac98ddb8c70d"

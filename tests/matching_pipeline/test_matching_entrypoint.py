@@ -10,21 +10,14 @@ from matching_pipeline.image_matching import __main__ as entrypoint
 
 
 class ImageMatchingEntrypointTests(unittest.TestCase):
-    def test_logging_configuration_is_explicit(self) -> None:
-        with mock.patch.object(entrypoint.logging, "basicConfig") as basic_config:
-            entrypoint._configure_logging()
-        basic_config.assert_called_once_with(
-            level=entrypoint.logging.INFO,
-            format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-            force=True,
-        )
-
     def test_upstream_failure_skips_matching(self) -> None:
-        with mock.patch.dict(os.environ, {entrypoint._SKIP_ENV: "1"}, clear=False), mock.patch.object(
-            entrypoint, "_configure_logging"
-        ), mock.patch.object(entrypoint, "run_image_matching") as run_matching:
+        with mock.patch.dict(
+            os.environ, {entrypoint._SKIP_ENV: "1"}, clear=False
+        ), mock.patch.object(entrypoint, "configure_logging") as configure, mock.patch.object(
+            entrypoint, "run_image_matching"
+        ) as run_matching:
             self.assertEqual(entrypoint.main(), 0)
+        configure.assert_called_once_with()
         run_matching.assert_not_called()
 
     def test_results_are_persisted(self) -> None:
@@ -35,7 +28,7 @@ class ImageMatchingEntrypointTests(unittest.TestCase):
             processed_auction_artwork_count=1,
         )
         with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
-            entrypoint, "_configure_logging"
+            entrypoint, "configure_logging"
         ), mock.patch.object(
             entrypoint, "matching_results_csv_path_from_env", return_value=None
         ), mock.patch.object(

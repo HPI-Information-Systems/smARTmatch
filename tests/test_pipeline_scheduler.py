@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import io
 import signal
 import sys
 import unittest
@@ -142,11 +141,10 @@ class SchedulerCliTests(unittest.TestCase):
         install.call_args_list[0].args[1](signal.SIGTERM, None)
         self.assertTrue(stop_event.is_set())
 
-    def test_log_writes_timestamped_message(self) -> None:
-        output = io.StringIO()
-        with mock.patch("sys.stdout", output):
+    def test_log_uses_python_logging(self) -> None:
+        with self.assertLogs(scheduler.logger, level="INFO") as captured:
             scheduler._log("hello")
-        self.assertIn("+00:00 hello\n", output.getvalue())
+        self.assertIn("hello", captured.output[0])
 
 
 if __name__ == "__main__":  # pragma: no cover

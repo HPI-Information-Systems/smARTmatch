@@ -5,16 +5,18 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import logging
 import os
 import signal
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event
 from typing import Mapping
+
+from shared.logging_adapter import configure_logging, get_logger
 
 DEFAULT_INTERVAL_MINUTES = 1.0
 POLL_SECONDS = 0.5
@@ -24,6 +26,7 @@ _PR_SET_CHILD_SUBREAPER = 36
 
 _APP_ROOT = Path(__file__).resolve().parents[1]
 _PROC_ROOT = Path("/proc")
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,7 @@ PIPELINE_STEPS = (
 
 
 def main() -> int:
+    configure_logging()
     args = _parse_args()
     _set_child_subreaper(True)
     stop_event = Event()
@@ -131,7 +135,8 @@ def _run_cycle(cycle_number: int, stop_event: Event) -> list[str]:
             if not blocking_succeeded:
                 _log(
                     f"cycle={cycle_number} step={step.name!r} will no-op because "
-                    "image blocking failed"
+                    "image blocking failed",
+                    level=logging.ERROR,
                 )
 
         return_code = _run_step(step, stop_event, extra_env=extra_env)
@@ -139,7 +144,8 @@ def _run_cycle(cycle_number: int, stop_event: Event) -> list[str]:
             failed_steps.append(step.name)
             _log(
                 f"cycle={cycle_number} step={step.name!r} failed "
-                f"exit_code={return_code}; continuing"
+                f"exit_code={return_code}; continuing",
+                level=logging.ERROR,
             )
         if step.key == "image-blocking":
             blocking_succeeded = return_code == 0
@@ -147,7 +153,10 @@ def _run_cycle(cycle_number: int, stop_event: Event) -> list[str]:
 
     elapsed = time.monotonic() - started_at
     status = "success" if not failed_steps else f"failed_steps={failed_steps}"
-    _log(f"cycle={cycle_number} finished duration={elapsed:.1f}s status={status}")
+    _log(
+        f"cycle={cycle_number} finished duration={elapsed:.1f}s status={status}",
+        level=logging.ERROR if failed_steps else logging.INFO,
+    )
     return failed_steps
 
 
@@ -169,8 +178,12 @@ def _run_step(
             env=env,
             start_new_session=True,
         )
-    except OSError as exc:
-        _log(f"step={step.name!r} could not start: {exc}")
+    except OSError:
+        _log(
+            f"step={step.name!r} could not start",
+            level=logging.ERROR,
+            exc_info=True,
+        )
         return 127
     while process.poll() is None:
         if stop_event.wait(POLL_SECONDS):
@@ -196,7 +209,10 @@ def _stop_process(process: subprocess.Popen[bytes]) -> None:
     try:
         process.wait(timeout=SHUTDOWN_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
-        _log("active pipeline step did not stop in time; killing it")
+        _log(
+            "active pipeline step did not stop in time; killing it",
+            level=logging.ERROR,
+        )
         _signal_process_group(process, signal.SIGKILL)
         process.wait()
 
@@ -208,7 +224,10 @@ def _stop_lingering_process_group(process_group_id: int) -> None:
     _signal_process_group_id(process_group_id, signal.SIGTERM)
     if _wait_for_process_group_exit(process_group_id, SHUTDOWN_TIMEOUT_SECONDS):
         return
-    _log(f"lingering process group did not stop in time; killing pgid={process_group_id}")
+    _log(
+        f"lingering process group did not stop in time; killing pgid={process_group_id}",
+        level=logging.ERROR,
+    )
     _signal_process_group_id(process_group_id, signal.SIGKILL)
     if not _wait_for_process_group_exit(process_group_id, SHUTDOWN_TIMEOUT_SECONDS):
         raise RuntimeError(f"process group {process_group_id} survived SIGKILL")
@@ -261,7 +280,10 @@ def _stop_new_child_processes(baseline_child_ids: set[int]) -> None:
         baseline_child_ids, signal.SIGTERM, SHUTDOWN_TIMEOUT_SECONDS
     ):
         return
-    _log("detached descendants did not stop in time; killing them")
+    _log(
+        "detached descendants did not stop in time; killing them",
+        level=logging.ERROR,
+    )
     if not _signal_and_wait_for_new_children(
         baseline_child_ids, signal.SIGKILL, SHUTDOWN_TIMEOUT_SECONDS
     ):
@@ -363,9 +385,13 @@ def _next_trigger_after(previous: float, interval: float, now: float) -> float:
     return next_run
 
 
-def _log(message: str) -> None:
-    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    print(f"{timestamp} {message}", flush=True)
+def _log(
+    message: str,
+    *,
+    level: int = logging.INFO,
+    exc_info: bool = False,
+) -> None:
+    logger.log(level, message, exc_info=exc_info)
 
 
 if __name__ == "__main__":  # pragma: no cover

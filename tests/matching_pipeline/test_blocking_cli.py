@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import io
-import logging
-import os
 import runpy
 import sys
 import unittest
@@ -19,9 +17,7 @@ from matching_pipeline.image_blocking import pipeline
 
 class CliTests(unittest.TestCase):
     def test_parser_defaults_and_explicit_values(self) -> None:
-        with mock.patch.dict(os.environ, {"BLOCKING_LOG_LEVEL": "warning"}):
-            defaults = cli.build_parser().parse_args([])
-        self.assertEqual(defaults.log_level, "warning")
+        defaults = cli.build_parser().parse_args([])
         self.assertFalse(defaults.only_write_input_csv)
 
         args = cli.build_parser().parse_args(
@@ -45,8 +41,6 @@ class CliTests(unittest.TestCase):
                 "--hf-token",
                 "secret",
                 "--clear-candidates",
-                "--log-level",
-                "debug",
             ]
         )
         self.assertEqual(args.input_csv, Path("in.csv"))
@@ -58,27 +52,19 @@ class CliTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             cli.build_parser().parse_args(["--dtype", "bad"])
 
-    def test_logging_configuration_valid_and_invalid(self) -> None:
-        with mock.patch.object(logging, "basicConfig") as basic:
-            cli._configure_logging("debug")
-        self.assertEqual(basic.call_args.kwargs["level"], logging.DEBUG)
-        self.assertTrue(basic.call_args.kwargs["force"])
-        with self.assertRaisesRegex(ValueError, "Invalid log level"):
-            cli._configure_logging("not-a-level")
-
-    def test_cli_invalid_log_and_conflicting_csv_options_use_parser_errors(self) -> None:
+    def test_cli_rejects_removed_log_flag_and_conflicting_csv_options(self) -> None:
         for argv, message in (
-            (["blocking", "--log-level", "bad"], "Invalid log level"),
+            (["blocking", "--log-level", "bad"], "unrecognized arguments"),
             (
                 ["blocking", "--only-write-input-csv", "--input-csv", "x.csv"],
                 "cannot be used",
             ),
         ):
-            with self.subTest(argv=argv), mock.patch.object(sys, "argv", argv), mock.patch.object(
-                cli, "_configure_logging"
-            ) as configure, contextlib.redirect_stderr(io.StringIO()) as stderr:
-                if "bad" in argv:
-                    configure.side_effect = ValueError("Invalid log level: 'bad'")
+            with self.subTest(argv=argv), mock.patch.object(
+                sys, "argv", argv
+            ), mock.patch.object(cli, "configure_logging"), contextlib.redirect_stderr(
+                io.StringIO()
+            ) as stderr:
                 with self.assertRaises(SystemExit) as raised:
                     cli.parse_blocking_args_and_run_blocking_with_result()
                 self.assertEqual(raised.exception.code, 2)
@@ -96,10 +82,10 @@ class CliTests(unittest.TestCase):
             "--include-processed-auction-images",
         ]
         with mock.patch.object(sys, "argv", argv), mock.patch.object(
-            cli, "_configure_logging"
-        ), mock.patch.object(
+            cli, "configure_logging"
+        ) as configure, mock.patch.object(
             cli, "create_blocking_input_csv", return_value=csv_result
-        ) as create, contextlib.redirect_stdout(io.StringIO()) as stdout:
+        ) as create, self.assertLogs(cli.logger, level="INFO") as captured:
             result = cli.parse_blocking_args_and_run_blocking_with_result(full_pipeline=True)
         self.assertEqual(result, cli.BlockingCliResult(0))
         create.assert_called_once_with(
@@ -107,8 +93,10 @@ class CliTests(unittest.TestCase):
             auction_limit=5,
             include_processed_auction_images=True,
         )
-        self.assertIn("Input CSV: input.csv", stdout.getvalue())
-        self.assertIn("Auction images: 3", stdout.getvalue())
+        configure.assert_called_once_with()
+        output = "\n".join(captured.output)
+        self.assertIn("Input CSV: input.csv", output)
+        self.assertIn("Auction images: 3", output)
 
     def test_normal_cli_forwards_kwargs_prints_rows_and_wrapper_exit_code(self) -> None:
         blocking_result = pipeline.BlockingRunResult(
@@ -125,18 +113,18 @@ class CliTests(unittest.TestCase):
         ]
         argv = ["blocking", "--input-csv", "input.csv", "--top-k", "2"]
         with mock.patch.object(sys, "argv", argv), mock.patch.object(
-            cli, "_configure_logging"
+            cli, "configure_logging"
         ), mock.patch.object(
             cli, "run_image_blocking", return_value=blocking_result
         ) as run, mock.patch.object(
             cli, "load_auction_to_lost_rankings_with_paths", return_value=rankings
-        ), contextlib.redirect_stdout(io.StringIO()) as stdout:
+        ), self.assertLogs(cli.logger, level="INFO") as captured:
             self.assertEqual(cli.parse_blocking_args_and_run_blocking(), 0)
 
         self.assertEqual(run.call_args.kwargs["input_csv"], Path("input.csv"))
         self.assertEqual(run.call_args.kwargs["top_k"], 2)
         self.assertNotIn("log_level", run.call_args.kwargs)
-        output = stdout.getvalue()
+        output = "\n".join(captured.output)
         self.assertIn("Blocking cache: cache", output)
         self.assertIn("First candidate rankings", output)
         self.assertIn("auction-long", output)
@@ -144,7 +132,7 @@ class CliTests(unittest.TestCase):
 
     def test_cli_propagates_pipeline_failure(self) -> None:
         with mock.patch.object(sys, "argv", ["blocking"]), mock.patch.object(
-            cli, "_configure_logging"
+            cli, "configure_logging"
         ), mock.patch.object(
             cli, "run_image_blocking", side_effect=RuntimeError("pipeline failed")
         ):
@@ -154,9 +142,9 @@ class CliTests(unittest.TestCase):
     def test_ranking_preview_empty_limited_and_exhausted(self) -> None:
         with mock.patch.object(
             cli, "load_auction_to_lost_rankings_with_paths", return_value=[]
-        ), contextlib.redirect_stdout(io.StringIO()) as stdout:
+        ), self.assertLogs(cli.logger, level="INFO") as captured:
             cli._print_ranking_preview()
-        self.assertIn("no candidate rankings", stdout.getvalue())
+        self.assertIn("no candidate rankings", "\n".join(captured.output))
 
         rankings = [
             {
@@ -180,10 +168,10 @@ class CliTests(unittest.TestCase):
             )
 
     def test_print_table_with_empty_and_wider_rows(self) -> None:
-        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+        with self.assertLogs(cli.logger, level="INFO") as captured:
             cli._print_table(("h", "header"), [])
             cli._print_table(("h", "header"), [("long", "x")])
-        output = stdout.getvalue()
+        output = "\n".join(captured.output)
         self.assertIn("h | header", output)
         self.assertIn("long | x", output)
 
@@ -194,8 +182,8 @@ class CliTests(unittest.TestCase):
         ), mock.patch(
             "matching_pipeline.shared.artifacts.load_auction_to_lost_rankings_with_paths",
             return_value=[],
-        ), mock.patch("logging.basicConfig"), contextlib.redirect_stdout(
-            io.StringIO()
+        ), mock.patch(
+            "shared.logging_adapter.configure_logging"
         ), warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             with self.assertRaises(SystemExit) as raised:

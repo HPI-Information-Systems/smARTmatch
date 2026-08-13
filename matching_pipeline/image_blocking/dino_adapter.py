@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from typing import AbstractSet, Optional, Protocol
 
@@ -18,6 +19,7 @@ from matching_pipeline.shared.env import (
 
 TOKEN_POOLING_MODES = frozenset({"avg", "median", "min", "max"})
 POOLING_ALIASES = {"average": "avg", "mean": "avg"}
+logger = logging.getLogger(__name__)
 
 
 class ImageGeometry(Protocol):
@@ -168,9 +170,9 @@ class DinoV3Adapter:
         self.device = self._select_device()
         self.hf_token = env_hf_token(hf_token)
         self.geometry = geometry
-        print(f"Loading {self.model_id} on {self.device}...")
+        logger.info("Loading %s on %s", self.model_id, self.device)
         if self.hf_token:
-            print("  Using Hugging Face token for authenticated download/access")
+            logger.info("Using Hugging Face token for authenticated download/access")
 
         processor_kwargs = {}
         model_kwargs = {"trust_remote_code": True}
@@ -195,20 +197,21 @@ class DinoV3Adapter:
                 trust_remote_code=True,
                 **processor_kwargs,
             )
-            print("  Loaded DINOv3 AutoImageProcessor")
-        except Exception as exc:
-            print(
-                "  Warning: Could not load DINOv3 AutoImageProcessor. "
-                f"Falling back to manual preprocessing. ({exc})"
+            logger.info("Loaded DINOv3 AutoImageProcessor")
+        except Exception:
+            logger.warning(
+                "Could not load DINOv3 AutoImageProcessor; "
+                "falling back to manual preprocessing",
+                exc_info=True,
             )
             self._manual_transform = self._build_manual_transform()
 
         if use_compile and self.device == "cuda":
             try:
                 self.model = torch.compile(self.model, mode="reduce-overhead")
-                print(f"  Applied torch.compile() to {self.model_id}")
-            except Exception as exc:
-                print(f"  torch.compile() not available: {exc}")
+                logger.info("Applied torch.compile() to %s", self.model_id)
+            except Exception:
+                logger.warning("torch.compile() not available", exc_info=True)
 
     @classmethod
     def _resolve_size_key(cls, size_key: Optional[str]) -> str:
@@ -245,14 +248,12 @@ class DinoV3Adapter:
                 "MPS/CPU inference fallback."
             )
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            print(
-                "  Warning: CUDA unavailable; ALLOW_NON_GPU_INFERENCE is set, "
-                "using MPS."
+            logger.warning(
+                "CUDA unavailable; ALLOW_NON_GPU_INFERENCE is set, using MPS"
             )
             return "mps"
-        print(
-            "  Warning: CUDA unavailable; ALLOW_NON_GPU_INFERENCE is set, "
-            "using CPU."
+        logger.warning(
+            "CUDA unavailable; ALLOW_NON_GPU_INFERENCE is set, using CPU"
         )
         return "cpu"
 
@@ -275,7 +276,9 @@ class DinoV3Adapter:
                 "torchvision or use a checkpoint with an AutoImageProcessor."
             ) from exc
         image_size = self._image_size()
-        print(f"  Manual DINOv3 preprocessing enabled (image_size={image_size})")
+        logger.info(
+            "Manual DINOv3 preprocessing enabled (image_size=%s)", image_size
+        )
         return transforms.Compose(
             [
                 transforms.Resize(image_size, interpolation=InterpolationMode.BICUBIC),

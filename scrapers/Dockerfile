@@ -3,6 +3,7 @@ FROM python:3.12.7-slim
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_DEFAULT_TIMEOUT=120 \
@@ -37,10 +38,11 @@ RUN PIP_TMPDIR=/var/tmp/pip-tmp \
 # Install Playwright's Chromium + system deps required by Lottissimo/Dorotheum.
 RUN python -m playwright install --with-deps chromium
 
+COPY shared /app/shared
 COPY scrapers /app/scrapers
 COPY scraper_dashboard /app/scraper_dashboard
 
-RUN mkdir -p /app/db/images
+RUN mkdir -p /app/db/images /app/logs
 
 EXPOSE 5555
 

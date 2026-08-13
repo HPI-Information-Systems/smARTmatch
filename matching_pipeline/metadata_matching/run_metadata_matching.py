@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from matching_pipeline.shared.db import connect as db_connect
-from matching_pipeline.shared.logging_setup import configure_logging
+from shared.logging_adapter import configure_logging
 
 logger = logging.getLogger(__name__)
 

@@ -39,11 +39,11 @@ class MatchingRuntimeTests(unittest.TestCase):
                 mock.patch.object(
                     runtime, "env_cache_dir", return_value=Path("cache")
                 ),
-                mock.patch("builtins.print") as printed,
+                self.assertLogs(runtime.logger, level="INFO") as captured,
             ):
                 result = runtime.run_image_matching(results_csv=output)
             extractor.assert_not_called()
-            printed.assert_called_once_with("Found 0 matches")
+            self.assertIn("No candidate rows found", "\n".join(captured.output))
             self.assertEqual(result.processed_auction_file_ids, [])
             self.assertEqual(result.accepted_matches, [])
             self.assertEqual(result.pairs_processed, 0)
@@ -127,7 +127,9 @@ class MatchingRuntimeTests(unittest.TestCase):
             write_results = stack.enter_context(
                 mock.patch.object(runtime, "_write_results")
             )
-            printed = stack.enter_context(mock.patch("builtins.print"))
+            captured = stack.enter_context(
+                self.assertLogs(runtime.logger, level="INFO")
+            )
             result = runtime.run_image_matching(
                 results_csv=output,
                 feats_dir=cache,
@@ -155,7 +157,7 @@ class MatchingRuntimeTests(unittest.TestCase):
         self.assertFalse(first_call.kwargs["save_missing_feats"])
         build.assert_called_once()
         write_results.assert_called_once_with(output, result.accepted_matches)
-        printed.assert_any_call("Found 1 matches")
+        self.assertIn("Found 1 accepted matches", "\n".join(captured.output))
 
     def test_cache_disabled_extracts_lost_image(self) -> None:
         extractor = mock.Mock(device="cpu")
@@ -192,7 +194,6 @@ class MatchingRuntimeTests(unittest.TestCase):
             mock.patch.object(runtime, "FeatureMatcher", return_value=matcher),
             mock.patch.object(runtime, "MatchClassifier", return_value=classifier),
             mock.patch.object(runtime, "_write_results") as write_results,
-            mock.patch("builtins.print"),
         ):
             result = runtime.run_image_matching(feats_dir=None)
 
@@ -223,7 +224,6 @@ class MatchingRuntimeTests(unittest.TestCase):
             mock.patch.object(runtime, "FeatureMatcher", return_value=matcher),
             mock.patch.object(runtime, "MatchClassifier"),
             mock.patch.object(runtime, "_write_results"),
-            mock.patch("builtins.print"),
         ):
             result = runtime.run_image_matching(feats_dir=None)
         self.assertEqual(result.pairs_processed, 0)

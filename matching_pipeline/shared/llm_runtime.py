@@ -7,6 +7,8 @@ import logging
 import os
 from typing import Any
 
+from shared.logging_adapter import LOG_LEVEL_ENV, LogLevel
+
 _VLLM_IMPLICIT_DEVICE_NAMES = {"", "auto", "cuda"}
 
 # These libraries log at INFO (e.g. one line per HTTP request while
@@ -23,32 +25,22 @@ _NOISY_LOGGER_NAMES = (
 
 
 def is_debug_enabled() -> bool:
-    """Whether verbose vLLM engine/model-loading diagnostics should be shown.
-
-    Mirrors the FRONTEND_DEBUG convention (see frontend/app.py). Defaults to
-    off so `docker compose up` only prints our own progress lines instead of
-    vLLM's per-request engine internals.
-    """
-    return os.getenv("METADATA_VLLM_VERBOSE", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    """Whether the unified log mode permits verbose vLLM diagnostics."""
+    return (
+        os.getenv(LOG_LEVEL_ENV, LogLevel.ERROR.value).strip().upper()
+        == LogLevel.ALL.value
+    )
 
 
 def _quiet_vllm_logging() -> None:
-    """Suppress vLLM/HTTP-client noise unless METADATA_VLLM_VERBOSE is set.
+    """Suppress vLLM/HTTP-client noise unless unified logging is set to ALL.
 
     The VLLM_LOGGING_LEVEL env var must be set before `vllm` is imported
     anywhere in the process, since vLLM reads it once when its logger is
-    first configured. This module is imported by every script that later
-    does `from vllm import ...`, so setting it here at module load time is
-    early enough. The explicit logger.setLevel() calls below don't have that
-    ordering requirement -- they take effect regardless of when httpx/etc.
-    actually start logging, and survive a later logging.basicConfig() call
-    elsewhere in the process (e.g. metadata_matcher.py), since basicConfig
-    only touches the root logger, not these already-leveled child loggers.
+    first configured. This module is imported by every stage that later does
+    `from vllm import ...`, so setting it here at module load time is early
+    enough. The explicit child-logger levels remain effective after the
+    shared adapter configures the root handlers.
     """
     if is_debug_enabled():
         return

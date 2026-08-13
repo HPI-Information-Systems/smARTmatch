@@ -205,4 +205,7 @@ def api_config_post():
 if __name__ == "__main__":
     from waitress import serve
 
+    from shared.logging_adapter import configure_logging
+
+    configure_logging()
     serve(app, host="0.0.0.0", port=5555)

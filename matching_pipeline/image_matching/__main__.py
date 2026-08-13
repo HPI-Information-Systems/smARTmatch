@@ -8,13 +8,14 @@ import os
 from matching_pipeline.image_matching.config import matching_results_csv_path_from_env
 from matching_pipeline.image_matching.db_results import write_matching_run_to_db
 from matching_pipeline.image_matching.run_image_matching import run_image_matching
+from shared.logging_adapter import configure_logging
 
 _SKIP_ENV = "SMARTMATCH_SKIP_IMAGE_MATCHING"
 logger = logging.getLogger(__name__)
 
 
 def main() -> int:
-    _configure_logging()
+    configure_logging()
     if os.getenv(_SKIP_ENV, "").strip() == "1":
         logger.warning("Image matching skipped because image blocking failed.")
         return 0
@@ -28,15 +29,6 @@ def main() -> int:
         db_result.processed_auction_artwork_count,
     )
     return 0
-
-
-def _configure_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        force=True,
-    )
 
 
 if __name__ == "__main__":

@@ -3,6 +3,9 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
+from unittest import mock
+
+from scrapers import worker
 from scrapers.scope import DASHBOARD_SCRAPER_NAMES
 from scrapers.worker import run_batch, run_one
 
@@ -78,6 +81,14 @@ class WorkerTests(unittest.TestCase):
         )
 
         self.assertEqual(return_code, 0)
+
+    def test_main_configures_shared_logging(self) -> None:
+        with mock.patch.object(worker, "configure_logging") as configure, mock.patch.object(
+            worker, "_parse_args", return_value=SimpleNamespace(command="run", scraper="christies", source="manual")
+        ), mock.patch.object(worker, "run_one", return_value=0):
+            self.assertEqual(worker.main(), 0)
+
+        configure.assert_called_once_with()
 
     def test_run_one_propagates_scraper_failure(self) -> None:
         orchestrator = SimpleNamespace(

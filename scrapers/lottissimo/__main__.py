@@ -1,6 +1,8 @@
 import argparse
 import sys
 
+from shared.logging_adapter import configure_logging
+
 from .scraper import LottissimoScraper
 
 
@@ -53,6 +55,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    configure_logging()
     args = parse_args()
     lottissimo_scraper = LottissimoScraper(
         max_pages=args.max_pages,

@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from matching_pipeline.metadata_normalization.run_normalization import run_normalization
-from matching_pipeline.shared.logging_setup import configure_logging
+from shared.logging_adapter import configure_logging
 
 _PIPELINE_ROOT = Path(__file__).resolve().parents[1]
 

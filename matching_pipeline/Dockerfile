@@ -3,6 +3,7 @@ FROM python:3.12.7-slim@sha256:60d9996b6a8a3689d36db740b49f4327be3be09a21122bd02
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_DEFAULT_TIMEOUT=120 \
@@ -48,9 +49,10 @@ RUN mkdir -p "$TMPDIR" \
     done \
     && rm -rf "$TMPDIR"
 
+COPY shared /app/shared
 COPY matching_pipeline /app/matching_pipeline
 COPY scripts/run_pipeline_scheduler.py /app/scripts/run_pipeline_scheduler.py
 
-RUN mkdir -p /app/db/images /app/cache /root/.cache
+RUN mkdir -p /app/db/images /app/cache /app/logs /root/.cache
 
 CMD ["python", "/app/scripts/run_pipeline_scheduler.py", "--interval-minutes", "1"]

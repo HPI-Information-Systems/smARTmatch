@@ -1,6 +1,8 @@
 import argparse
 import sys
 
+from shared.logging_adapter import configure_logging
+
 from .constants import DEFAULT_CATEGORY_URL
 from .scraper import DorotheumScraper
 
@@ -80,6 +82,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    configure_logging()
     args = parse_args()
 
     scraper = DorotheumScraper(

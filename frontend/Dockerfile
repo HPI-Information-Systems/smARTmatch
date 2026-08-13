@@ -3,6 +3,7 @@ FROM python:3.12.7-slim
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_DEFAULT_TIMEOUT=120 \
@@ -27,12 +28,13 @@ RUN mkdir -p "$TMPDIR" \
     done \
     && rm -rf "$TMPDIR"
 
+COPY shared /app/shared
 COPY frontend /app/frontend
 # Frontend only needs the SQLAlchemy ORM models from scrapers/, not the scraper code itself
 COPY scrapers/__init__.py /app/scrapers/__init__.py
 COPY scrapers/models.py /app/scrapers/models.py
 COPY scrapers/models_production.py /app/scrapers/models_production.py
 
-RUN mkdir -p /app/db/images /app/cache
+RUN mkdir -p /app/db/images /app/cache /app/logs
 
 CMD ["python", "-m", "frontend"]

@@ -4,6 +4,16 @@ import time
 import requests
 from requests import Response
 
+from shared.logging_adapter import get_logger
+
+logger = get_logger(__name__)
+
+
+def _default_log(message: str) -> None:
+    log = logger.error if "[fail]" in message.lower() else logger.info
+    log("%s", message)
+
+
 USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.10 Safari/605.1.1",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.3",
@@ -30,7 +40,7 @@ def generate_headers() -> dict[str, str]:
 
 
 def handle_request(
-    url, max_retries=5, min_wait=0.25, max_wait=0.25, *, log=print
+    url, max_retries=5, min_wait=0.25, max_wait=0.25, *, log=_default_log
 ) -> Response:
     """Retry-wrapped HTTP GET.
 
@@ -54,7 +64,9 @@ def handle_request(
             log(f"[retry] attempt {attempts}/{max_retries}")
 
 
-def request_html(url, max_retries=5, min_wait=0.25, max_wait=0.25, *, log=print):
+def request_html(
+    url, max_retries=5, min_wait=0.25, max_wait=0.25, *, log=_default_log
+):
     r = handle_request(url, max_retries, min_wait, max_wait, log=log)
     try:
         encoding = (r.encoding or "").lower()
@@ -68,7 +80,9 @@ def request_html(url, max_retries=5, min_wait=0.25, max_wait=0.25, *, log=print)
         return None
 
 
-def request_image(url, max_retries=5, min_wait=0.25, max_wait=0.25, *, log=print):
+def request_image(
+    url, max_retries=5, min_wait=0.25, max_wait=0.25, *, log=_default_log
+):
     r = handle_request(url, max_retries, min_wait, max_wait, log=log)
     try:
         return r.content

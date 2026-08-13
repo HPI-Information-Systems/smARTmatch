@@ -11,15 +11,21 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from shared.logging_adapter import get_logger
+
 try:
     from .generate_user_agent import generate_random_user_agent
 except ImportError:  # pragma: no cover - fallback for direct script usage
     from generate_user_agent import generate_random_user_agent
 
 
+logger = get_logger(__name__)
+
+
 def _log(message: str) -> None:
-    """Standalone log helper sharing the [los] prefix with LostArtScraper."""
-    print(f"[los] {message}")
+    """Log with the same platform tag used by ``LostArtScraper``."""
+    logger.info("[los] %s", message)
+
 
 BASE_URL = "https://www.lostart.de/de/search-export/csv"
 PAGE_SIZE = 500

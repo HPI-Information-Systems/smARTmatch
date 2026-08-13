@@ -82,6 +82,27 @@ Follow matching logs with:
 docker compose logs -f --tail=200 matching_pipeline
 ```
 
+### Application logging
+
+All Python services use the shared adapter in `shared/logging_adapter.py`. Logs
+continue to reach Docker stdout/stderr and are also persisted on the host in
+`./logs` as one file per service and local calendar day, for example
+`matching_pipeline_2026-08-11.txt`.
+
+Configure the policy in the selected Docker environment file:
+
+```dotenv
+SMARTMATCH_LOG_LEVEL=ERROR          # ALL or ERROR
+SMARTMATCH_LOG_RETENTION_DAYS=30
+SMARTMATCH_LOG_DIR=/app/logs
+```
+
+`ALL` includes DEBUG and higher records; `ERROR` includes only ERROR and
+CRITICAL records. Rotation and retention use each container's system timezone
+(UTC unless the container runtime is configured otherwise). Files older than
+the configured calendar-day window are removed automatically when a service
+starts and when it first logs on a new day.
+
 ### Inference profile
 
 The base stack is the production GPU profile: `matching_pipeline` requests all GPUs, image inference requires CUDA, and metadata inference uses vLLM with an AWQ model. Startup fails clearly when the NVIDIA runtime is unavailable rather than silently falling back to CPU.

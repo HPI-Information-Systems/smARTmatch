@@ -10,15 +10,22 @@ from typing import Iterable, Optional
 import requests
 from bs4 import BeautifulSoup, NavigableString, Tag
 
+from shared.logging_adapter import get_logger
+
 try:
     from .generate_user_agent import generate_user_agent
 except ImportError:  # pragma: no cover - fallback for direct script usage
     from generate_user_agent import generate_user_agent
 
 
+logger = get_logger(__name__)
+
+
 def _log(message: str) -> None:
-    """Standalone log helper sharing the [los] prefix with LostArtScraper."""
-    print(f"[los] {message}")
+    """Log with the same platform tag used by ``LostArtScraper``."""
+    log = logger.error if "[fail]" in message.lower() else logger.info
+    log("[los] %s", message)
+
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 INDEX_FILE = DATA_DIR / "index.csv"

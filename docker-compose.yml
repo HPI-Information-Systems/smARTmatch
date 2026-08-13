@@ -28,10 +28,13 @@ services:
         condition: service_healthy
     env_file:
       - ${SMARTMATCH_ENV_FILE:-./.env.docker}
+    environment:
+      SMARTMATCH_CONTAINER_NAME: scrapers
     ports:
       - "5555:5555"
     volumes:
       - ./db/images:/app/db/images
+      - ./logs:/app/logs
     healthcheck:
       test: ["CMD-SHELL", "supervisorctl -c /app/scrapers/supervisord.conf status scraper-dashboard | grep -q RUNNING && supervisorctl -c /app/scrapers/supervisord.conf status scraper-scheduler | grep -q RUNNING"]
       interval: 30s
@@ -56,10 +59,13 @@ services:
     env_file:
       - ${SMARTMATCH_ENV_FILE:-./.env.docker}
     gpus: all
+    environment:
+      SMARTMATCH_CONTAINER_NAME: matching_pipeline
     volumes:
       - ./db/images:/app/db/images
       - ./cache/matching_pipeline:/app/cache
       - ./cache/matching_pipeline/models:/root/.cache
+      - ./logs:/app/logs
     logging:
       driver: json-file
       options:
@@ -76,12 +82,20 @@ services:
         condition: service_healthy
     env_file:
       - ${SMARTMATCH_ENV_FILE:-./.env.docker}
+    environment:
+      SMARTMATCH_CONTAINER_NAME: frontend
     ports:
       - "80:80"
     volumes:
       - ./db/images:/app/db/images
       - ./cache:/app/cache
       - ./frontend:/app/frontend
+      - ./logs:/app/logs
+    logging:
+      driver: json-file
+      options:
+        max-size: "200m"
+        max-file: "3"
 
 
 volumes:

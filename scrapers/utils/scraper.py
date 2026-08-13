@@ -11,6 +11,7 @@ Scraper architecture for this repo:
 from __future__ import annotations
 
 import hashlib
+import logging
 from abc import ABC, abstractmethod
 from io import BytesIO
 from pathlib import Path
@@ -19,6 +20,7 @@ from typing import Callable, Iterable, Optional, Sequence, Union
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+from shared.logging_adapter import get_logger
 from scrapers.db_interface import Base, Database
 from scrapers.utils.image_storage import repository_root, safe_image_prefix
 from scrapers.utils.request_handler import request_image
@@ -28,6 +30,16 @@ ModelResult = Union[Base, Sequence[Base]]
 
 _MAX_IMAGE_WIDTH_PX = 2000
 _JPEG_QUALITY = 90
+logger = get_logger(__name__)
+
+
+def _message_level(message: str) -> int:
+    normalized = message.lower()
+    return (
+        logging.ERROR
+        if any(tag in normalized for tag in ("[fail]", "[error]", "[fatal]"))
+        else logging.INFO
+    )
 
 
 def log(prefix: str, message: str) -> None:
@@ -37,7 +49,7 @@ def log(prefix: str, message: str) -> None:
     modules that aren't bound to a ``Scraper`` (which has ``self.log``).
     """
 
-    print(f"[{prefix}] {message}")
+    logger.log(_message_level(message), "[%s] %s", prefix, message)
 
 
 class Scraper(ABC):
@@ -102,9 +114,9 @@ class Scraper(ABC):
             self.on_batch_commit()
 
     def log(self, message: str) -> None:
-        """Print one terminal line prefixed with this scraper's 3-letter tag."""
+        """Log one record prefixed with this scraper's platform tag."""
 
-        print(f"[{self.log_prefix}] {message}")
+        logger.log(_message_level(message), "[%s] %s", self.log_prefix, message)
 
     def run(self, *, skip: int = 0, report_every: int = 10) -> None:
         """Run the scraper and persist results to the database."""

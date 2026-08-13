@@ -40,6 +40,8 @@ class PipelineDeploymentTests(unittest.TestCase):
         self.assertIn("ALLOW_NON_GPU_INFERENCE=0", development_env)
         self.assertIn("METADATA_BACKEND=vllm", development_env)
         self.assertIn("METADATA_DEVICE=cuda", development_env)
+        self.assertIn("SMARTMATCH_LOG_LEVEL=ERROR", development_env)
+        self.assertIn("SMARTMATCH_LOG_RETENTION_DAYS=30", development_env)
 
     def test_pipeline_dockerfile_pins_base_and_lightglue(self) -> None:
         dockerfile = (_ROOT / "matching_pipeline" / "Dockerfile").read_text()

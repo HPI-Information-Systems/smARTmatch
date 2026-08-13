@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 
 from matching_pipeline.shared.db import connect as db_connect
-from matching_pipeline.shared.logging_setup import configure_logging
+from shared.logging_adapter import configure_logging
 
 _PIPELINE_ROOT = Path(__file__).resolve().parent
 logger = logging.getLogger(__name__)

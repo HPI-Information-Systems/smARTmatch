@@ -184,7 +184,10 @@ class SothebysClient:
         if isinstance(data, dict) and data.get("errors"):
             first = data.get("errors")[0] if isinstance(data.get("errors"), list) and data.get("errors") else None
             message = first.get("message") if isinstance(first, dict) else None
-            self._log(f"[graphql] lot {lot_id} returned errors: {message or 'unknown error'}")
+            self._log(
+                f"[graphql] [fail] lot {lot_id} returned errors: "
+                f"{message or 'unknown error'}"
+            )
             return None
 
         return data

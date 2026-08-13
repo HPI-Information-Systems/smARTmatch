@@ -14,11 +14,14 @@ from pathlib import Path
 from threading import Event
 from typing import Any
 
+from shared.logging_adapter import configure_logging, get_logger
+
 _INTERVAL_ENV = "SCRAPER_INTERVAL"
 _INTERVAL_PATTERN = re.compile(r"^([1-9]\d*)([smhd])$")
 _UNIT_SECONDS = {"s": 1, "m": 60, "h": 3_600, "d": 86_400}
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _POLL_SECONDS = 1.0
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -45,10 +48,7 @@ class BatchProcessManager:
         ]
         process = self._popen_factory(command, cwd=str(_REPO_ROOT))
         self._children.append((source, process))
-        print(
-            f"[scheduler] source={source} submitted pid={process.pid}",
-            flush=True,
-        )
+        logger.info("source=%s submitted pid=%s", source, process.pid)
         return process.pid
 
     def reap_finished(self) -> None:
@@ -59,11 +59,8 @@ class BatchProcessManager:
                 active.append((source, process))
                 continue
             process.wait()
-            print(
-                f"[scheduler] source={source} pid={process.pid} "
-                f"finished exit_code={return_code}",
-                flush=True,
-            )
+            log = logger.info if return_code == 0 else logger.error
+            log("source=%s pid=%s finished exit_code=%s", source, process.pid, return_code)
         self._children = active
 
 
@@ -98,12 +95,8 @@ def next_trigger_after(previous: float, interval: float, now: float) -> float:
 def _submit_batch(manager: BatchProcessManager, source: str) -> None:
     try:
         manager.launch(source)
-    except OSError as exc:
-        print(
-            f"[scheduler] source={source} could not start batch: {exc}",
-            file=sys.stderr,
-            flush=True,
-        )
+    except OSError:
+        logger.exception("source=%s could not start batch", source)
 
 
 def run_scheduler(
@@ -117,9 +110,8 @@ def run_scheduler(
     process_manager = manager or BatchProcessManager()
     next_trigger = monotonic()
     first_trigger = True
-    print(
-        f"[scheduler] interval={config.interval_seconds}s; initial batch starts now",
-        flush=True,
+    logger.info(
+        "interval=%ss; initial batch starts now", config.interval_seconds
     )
 
     while not stop_event.is_set():
@@ -140,15 +132,16 @@ def run_scheduler(
         stop_event.wait(min(_POLL_SECONDS, next_trigger - now))
 
     process_manager.reap_finished()
-    print("[scheduler] stopped", flush=True)
+    logger.info("stopped")
     return 0
 
 
 def main() -> int:
+    configure_logging()
     try:
         config = load_config()
-    except ValueError as exc:
-        print(f"[scheduler] invalid configuration: {exc}", file=sys.stderr, flush=True)
+    except ValueError:
+        logger.exception("invalid configuration")
         return 2
 
     stop_event = Event()

@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import argparse
 import inspect
-import logging
 import math
 import os
 import sys
@@ -36,13 +35,14 @@ from sqlalchemy import Column, DateTime, Integer, String, Text, func, select
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
+from shared.logging_adapter import configure_logging, get_logger
 from scrapers.db_interface import AuctionArtwork, AuctionPlatform, Database, LostArtwork
 from scrapers.run_lock import try_acquire_scraper_lock
 from scrapers.runtime_config import load_request_cooldown_override
 from scrapers.utils.image_storage import platform_image_prefix
 
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -1079,6 +1079,7 @@ def _run_to_dict(run: ScraperRun) -> dict:
 
 
 def cli() -> None:
+    configure_logging()
     parser = argparse.ArgumentParser(
         prog="orchestrator",
         description="smARTmatch scraper orchestrator.",

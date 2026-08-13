@@ -7,7 +7,10 @@ import signal
 import sys
 from collections.abc import Callable
 
+from shared.logging_adapter import configure_logging, get_logger
+
 _ESSENTIAL_PROCESSES = {"scraper-dashboard", "scraper-scheduler"}
+logger = get_logger(__name__)
 
 
 def _payload_fields(payload: str) -> dict[str, str]:
@@ -31,17 +34,15 @@ def handle_event(
     process_name = _payload_fields(payload).get("processname")
     if event_name != "PROCESS_STATE_FATAL" or process_name not in _ESSENTIAL_PROCESSES:
         return False
-    print(
-        f"[supervisor] essential process {process_name} entered FATAL; "
-        "stopping container",
-        file=sys.stderr,
-        flush=True,
+    logger.error(
+        "essential process %s entered FATAL; stopping container", process_name
     )
     kill(parent_pid, signal.SIGTERM)
     return True
 
 
 def main() -> int:
+    configure_logging(console_mode="stderr")
     while True:
         sys.stdout.write("READY\n")
         sys.stdout.flush()

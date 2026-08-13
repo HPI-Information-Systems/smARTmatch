@@ -59,7 +59,6 @@ def run_image_matching(
             "LightGlue matching skipped in %s: no candidate rows",
             _format_duration(perf_counter() - run_started_at),
         )
-        print("Found 0 matches")
         return ImageMatchingRunResult(
             processed_auction_file_ids=[],
             accepted_matches=[],
@@ -185,7 +184,6 @@ def run_image_matching(
         results_path or "disabled",
     )
 
-    print(f"Found {len(found_matches)} matches")
     return ImageMatchingRunResult(
         processed_auction_file_ids=processed_file_ids,
         accepted_matches=found_matches,

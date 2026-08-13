@@ -157,5 +157,5 @@ class AuctionPlatformScraper(Scraper):
             )
         except Exception as exc:
             lot_display = lot_id or lot_url or "unknown"
-            self.log(f"[skip] images for lot {lot_display}: {exc}")
+            self.log(f"[fail] images for lot {lot_display}: {exc}")
             return []

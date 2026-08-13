@@ -1,9 +1,14 @@
-import sys
+"""Frontend container entrypoint."""
 
-from .app import main
+from shared.logging_adapter import configure_logging
+
+
+def main() -> None:
+    configure_logging()
+    from .app import main as run_frontend
+
+    run_frontend()
+
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        sys.exit("\nInterrupted by user.")
+    raise SystemExit(main())

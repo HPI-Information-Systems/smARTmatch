@@ -8,11 +8,15 @@ from typing import Optional
 
 from playwright.sync_api import Browser, BrowserContext, Playwright, sync_playwright
 
+from shared.logging_adapter import get_logger
+
 _USER_AGENTS = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
 )
+
+logger = get_logger(__name__)
 
 _EXTRA_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -68,7 +72,8 @@ class PlaywrightFetchMixin:
             log_method(message)
             return
         prefix = getattr(self, "log_prefix", "scr")
-        print(f"[{prefix}] {message}")
+        log = logger.error if "[fail]" in message.lower() else logger.info
+        log("[%s] %s", prefix, message)
 
     def _start_browser(self) -> None:
         if self._context is not None:

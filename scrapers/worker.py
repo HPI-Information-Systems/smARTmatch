@@ -11,11 +11,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from shared.logging_adapter import configure_logging, get_logger
 from scrapers.orchestrator import Orchestrator, SCRAPER_REGISTRY
 from scrapers.scope import DASHBOARD_SCRAPER_NAMES
 
 SOURCE_CHOICES = ("manual", "scheduled", "startup", "cli")
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+logger = get_logger(__name__)
 
 
 def _worker_orchestrator() -> Orchestrator:
@@ -29,26 +31,25 @@ def run_one(
     orchestrator_factory: Callable[[], Any] = _worker_orchestrator,
 ) -> int:
     """Run one scraper synchronously and return a process exit code."""
-    print(f"[worker] source={source} scraper={scraper_name} starting", flush=True)
+    logger.info("source=%s scraper=%s starting", source, scraper_name)
     try:
         result = orchestrator_factory().run_scraper(scraper_name)
-    except Exception as exc:
-        print(
-            f"[worker] source={source} scraper={scraper_name} launch failed: {exc}",
-            file=sys.stderr,
-            flush=True,
-        )
+    except Exception:
+        logger.exception("source=%s scraper=%s launch failed", source, scraper_name)
         return 1
 
-    print(json.dumps(result, sort_keys=True, default=str), flush=True)
+    logger.info("result=%s", json.dumps(result, sort_keys=True, default=str))
     status = result.get("status")
     if status == "failed":
+        logger.error(
+            "source=%s scraper=%s failed result=%s",
+            source,
+            scraper_name,
+            json.dumps(result, sort_keys=True, default=str),
+        )
         return 1
     if status == "skipped":
-        print(
-            f"[worker] source={source} scraper={scraper_name} already running; skipped",
-            flush=True,
-        )
+        logger.info("source=%s scraper=%s already running; skipped", source, scraper_name)
     return 0
 
 
@@ -78,13 +79,9 @@ def run_batch(
         command = _run_one_command(scraper_name, source)
         try:
             process = popen_factory(command, cwd=str(_REPO_ROOT))
-        except OSError as exc:
+        except OSError:
             failed = True
-            print(
-                f"[worker] scraper={scraper_name} could not start: {exc}",
-                file=sys.stderr,
-                flush=True,
-            )
+            logger.exception("scraper=%s could not start", scraper_name)
             continue
         children.append((scraper_name, process))
 
@@ -97,25 +94,21 @@ def run_batch(
             scraper_name = pending[future]
             try:
                 return_code = future.result()
-            except Exception as exc:
+            except Exception:
                 failed = True
-                print(
-                    f"[worker] scraper={scraper_name} wait failed: {exc}",
-                    file=sys.stderr,
-                    flush=True,
-                )
+                logger.exception("scraper=%s wait failed", scraper_name)
                 continue
             if return_code != 0:
                 failed = True
-                print(
-                    f"[worker] scraper={scraper_name} failed with exit code {return_code}",
-                    file=sys.stderr,
-                    flush=True,
+                logger.error(
+                    "scraper=%s failed with exit code %s", scraper_name, return_code
                 )
 
-    print(
-        f"[worker] source={source} batch finished status={'failed' if failed else 'completed'}",
-        flush=True,
+    log = logger.error if failed else logger.info
+    log(
+        "source=%s batch finished status=%s",
+        source,
+        "failed" if failed else "completed",
     )
     return 1 if failed else 0
 
@@ -138,6 +131,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    configure_logging()
     args = _parse_args(argv)
     if args.command == "run":
         return run_one(args.scraper, source=args.source)

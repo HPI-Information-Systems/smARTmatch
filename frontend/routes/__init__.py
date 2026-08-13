@@ -17,6 +17,7 @@ _ROUTE_MODULES = (
     "api_match_reset",
     "api_match_bookmark",
     "api_match_unbookmark",
+    "api_system_status",
     "tinder_index",
     "tinder_match",
 )

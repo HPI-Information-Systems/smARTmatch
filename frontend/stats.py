@@ -14,7 +14,7 @@ from sqlalchemy.engine import Engine
 
 from .charts import make_bar_chart, make_line_chart
 from .stats_format import format_int
-from .stats_storage import image_file_metrics
+from .stats_storage import image_file_metrics, project_directory_metrics
 from .stats_timing import StatsTimingCollector
 from .sql import stats as stats_sql
 
@@ -238,12 +238,13 @@ def _image_file_metrics(engine, timings=None):
         )
 
 
-def _with_fresh_image_file_metrics(stats):
+def _with_fresh_filesystem_metrics(stats):
+    refreshed = {**stats, "project_size": project_directory_metrics(refresh_async=True)}
     image_files = stats.get("image_files")
     if not isinstance(image_files, dict) or "_scan_paths" not in image_files:
-        return stats
+        return refreshed
     return {
-        **stats,
+        **refreshed,
         "image_files": image_file_metrics(
             image_files["_scan_paths"],
             refresh_async=True,
@@ -281,6 +282,7 @@ def _collect_dashboard_stats(connectable):
         "throughput": _match_throughput_24h(connectable, timings),
         "pipeline_throughput": _pipeline_throughput_24h(connectable, timings),
         "image_files": _image_file_metrics(connectable, timings),
+        "project_size": project_directory_metrics(refresh_async=True),
         "match_categories": _match_categories(connectable, timings),
     }
     timings.add("total stats aggregation", time.perf_counter() - total_start)
@@ -307,7 +309,7 @@ def get_dashboard_stats(engine):
             cached_stats = _DASHBOARD_STATS_CACHE["value"]
 
     if cached_stats is not None:
-        return _with_fresh_image_file_metrics(cached_stats)
+        return _with_fresh_filesystem_metrics(cached_stats)
 
     with _CACHE_LOCK:
         now = time.monotonic()
@@ -328,4 +330,4 @@ def get_dashboard_stats(engine):
                 }
             )
 
-    return _with_fresh_image_file_metrics(cached_stats)
+    return _with_fresh_filesystem_metrics(cached_stats)

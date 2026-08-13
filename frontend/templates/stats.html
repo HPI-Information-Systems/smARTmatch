@@ -83,11 +83,8 @@
             <div class="col">
                 <section class="stats-kpi-card h-100">
                     <span class="stats-kpi-icon"><i class="bi bi-hdd" aria-hidden="true"></i></span>
-                    <p class="stats-kpi-label">Bildspeicher</p>
-                    <p class="stats-kpi-value">{{ stats.image_files.disk_label }}</p>
-                    {% if stats.image_files.missing_count > 0 %}
-                        <p class="stats-kpi-note mb-0">{{ stats.image_files.missing_label }} Pfade nicht auf diesem System gefunden.</p>
-                    {% endif %}
+                    <p class="stats-kpi-label">Projektgröße</p>
+                    <p class="stats-kpi-value{% if not stats.project_size.scan_ready %} stats-kpi-value-loading{% endif %}" data-project-size-label>{{ stats.project_size.size_label }}</p>
                 </section>
             </div>
         </div>

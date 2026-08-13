@@ -84,9 +84,11 @@ services:
       - ${SMARTMATCH_ENV_FILE:-./.env.docker}
     environment:
       SMARTMATCH_CONTAINER_NAME: frontend
+      SMARTMATCH_PROJECT_DIR: /project
     ports:
       - "80:80"
     volumes:
+      - .:/project:ro
       - ./db/images:/app/db/images
       - ./cache:/app/cache
       - ./frontend:/app/frontend

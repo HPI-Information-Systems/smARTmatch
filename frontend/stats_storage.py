@@ -1,8 +1,9 @@
-"""Image-file storage statistics for the SmartMatch frontend."""
+"""Filesystem statistics for the SmartMatch frontend."""
 
 from __future__ import annotations
 
 import os
+import stat
 import time
 from pathlib import Path
 from threading import Lock, Thread
@@ -19,6 +20,15 @@ _SCAN_CACHE = {
     "refreshing": False,
 }
 _UNKNOWN_DISK_LABEL = "xx GB"
+
+_PROJECT_SIZE_CACHE_LOCK = Lock()
+_PROJECT_SIZE_CACHE = {
+    "root": None,
+    "size_bytes": None,
+    "expires_at": 0.0,
+    "refreshing": False,
+}
+_UNKNOWN_PROJECT_SIZE_LABEL = "Wird berechnet…"
 
 
 def _cache_ttl_seconds():
@@ -134,6 +144,7 @@ def _metrics_result(path_list, disk_bytes, missing, include_scan_paths=False):
         ),
         "missing_count": missing or 0,
         "missing_label": format_int(missing or 0),
+        "scan_ready": disk_bytes is not None and missing is not None,
     }
     if include_scan_paths:
         result["_scan_paths"] = tuple(path_list)
@@ -154,3 +165,93 @@ def image_file_metrics(paths, refresh_async=False, include_scan_paths=False):
 
     total_bytes, missing = _scan_image_files(path_list, image_root)
     return _metrics_result(path_list, total_bytes, missing, include_scan_paths)
+
+
+def _project_root():
+    configured_root = os.getenv("SMARTMATCH_PROJECT_DIR")
+    if configured_root:
+        root = Path(configured_root).expanduser()
+        return root if root.is_absolute() else Path.cwd() / root
+    return Path(__file__).resolve().parents[1]
+
+
+def _scan_project_directory(root):
+    total_bytes = 0
+    pending = [root]
+    while pending:
+        path = pending.pop()
+        try:
+            path_stat = path.lstat()
+        except OSError:
+            continue
+        total_bytes += path_stat.st_size
+        if not stat.S_ISDIR(path_stat.st_mode):
+            continue
+        try:
+            with os.scandir(path) as entries:
+                pending.extend(Path(entry.path) for entry in entries)
+        except OSError:
+            continue
+    return total_bytes
+
+
+def _project_size_result(size_bytes):
+    return {
+        "size_bytes": size_bytes or 0,
+        "size_label": (
+            format_bytes(size_bytes)
+            if size_bytes is not None
+            else _UNKNOWN_PROJECT_SIZE_LABEL
+        ),
+        "scan_ready": size_bytes is not None,
+    }
+
+
+def _store_project_size(root, size_bytes, ttl_seconds):
+    with _PROJECT_SIZE_CACHE_LOCK:
+        _PROJECT_SIZE_CACHE.update(
+            {
+                "root": str(root),
+                "size_bytes": size_bytes,
+                "expires_at": time.monotonic() + ttl_seconds,
+                "refreshing": False,
+            }
+        )
+
+
+def _refresh_project_size(root, ttl_seconds):
+    try:
+        size_bytes = _scan_project_directory(root)
+    except Exception:
+        with _PROJECT_SIZE_CACHE_LOCK:
+            if _PROJECT_SIZE_CACHE["root"] == str(root):
+                _PROJECT_SIZE_CACHE["refreshing"] = False
+        return
+    _store_project_size(root, size_bytes, ttl_seconds)
+
+
+def project_directory_metrics(refresh_async=False):
+    """Return the apparent size of the complete configured project directory."""
+    root = _project_root().resolve()
+    ttl_seconds = _cache_ttl_seconds()
+
+    if not refresh_async:
+        size_bytes = _scan_project_directory(root)
+        _store_project_size(root, size_bytes, ttl_seconds)
+        return _project_size_result(size_bytes)
+
+    with _PROJECT_SIZE_CACHE_LOCK:
+        root_changed = _PROJECT_SIZE_CACHE["root"] != str(root)
+        size_bytes = None if root_changed else _PROJECT_SIZE_CACHE["size_bytes"]
+        stale = root_changed or time.monotonic() >= _PROJECT_SIZE_CACHE["expires_at"]
+        should_refresh = stale and not _PROJECT_SIZE_CACHE["refreshing"]
+        if should_refresh:
+            _PROJECT_SIZE_CACHE.update({"root": str(root), "refreshing": True})
+
+    if should_refresh:
+        Thread(
+            target=_refresh_project_size,
+            args=(root, ttl_seconds),
+            daemon=True,
+        ).start()
+    return _project_size_result(size_bytes)

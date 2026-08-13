@@ -17,7 +17,9 @@
         <link rel="stylesheet"
               href="{{ url_for('static', filename='frontend.css') }}" />
     </head>
-    <body class="d-flex flex-column {% if request.endpoint == 'home' %}is-home-page{% else %}is-sub-page{% endif %} {% if request.endpoint == 'match' %}is-match-page{% endif %}">
+    <body class="d-flex flex-column {% if request.endpoint == 'home' %}is-home-page{% else %}is-sub-page{% endif %} {% if request.endpoint == 'match' %}is-match-page{% endif %}"
+          data-system-status-url="{{ url_for('api_system_status') }}">
+        <div class="system-toast-container" aria-live="assertive" aria-atomic="true"></div>
         <header class="site-header py-2 bg-light">
             {% set match_list_url = url_for('match_list', rating='unrated', sort='similarity', bookmarked='false', image_weight=request.args.get('image_weight', 50)) %}
             {% set primary_nav_items = [

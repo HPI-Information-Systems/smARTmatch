@@ -248,6 +248,71 @@
     root.querySelectorAll("[data-stats-time]").forEach(updateStatsTimeLabel);
   }
 
+  const SYSTEM_STATUS_POLL_INTERVAL_MS = 1000;
+  const SYSTEM_STATUS_MAX_ATTEMPTS = 120;
+
+  function dismissSystemToast(toast) {
+    if (!toast || toast.dataset.dismissing === "1") return;
+    toast.dataset.dismissing = "1";
+    toast.classList.add("system-toast-exit");
+    window.setTimeout(() => toast.remove(), 220);
+  }
+
+  function showMissingFilesToast(missingLabel) {
+    const container = document.querySelector(".system-toast-container");
+    if (!container || container.querySelector("[data-missing-files-toast]")) return;
+
+    const toast = document.createElement("div");
+    toast.className = "system-toast system-toast-error";
+    toast.dataset.missingFilesToast = "1";
+    toast.setAttribute("role", "alert");
+    toast.innerHTML = `
+      <div class="system-toast-icon" aria-hidden="true"><i class="bi bi-exclamation-circle-fill"></i></div>
+      <div class="system-toast-content">
+        <strong class="system-toast-title">Bilddateien nicht verfügbar</strong>
+        <p class="system-toast-message">${missingLabel} in der Datenbank hinterlegte Bildpfade konnten auf diesem System nicht gefunden werden.</p>
+      </div>
+      <button class="system-toast-close" type="button" aria-label="Benachrichtigung schließen">×</button>
+      <div class="system-toast-progress" aria-hidden="true"></div>
+    `;
+    toast.querySelector(".system-toast-close").addEventListener("click", () => dismissSystemToast(toast));
+    container.appendChild(toast);
+    window.setTimeout(() => dismissSystemToast(toast), 10000);
+  }
+
+  async function loadSystemStatus(attempt = 0) {
+    const statusUrl = document.body.dataset.systemStatusUrl;
+    if (!statusUrl) return;
+
+    try {
+      const response = await fetch(statusUrl, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (!response.ok) return;
+      const payload = await response.json();
+      const imageFiles = payload && payload.image_files;
+      const projectSize = payload && payload.project_size;
+      if (projectSize && projectSize.scan_ready) {
+        document.querySelectorAll("[data-project-size-label]").forEach((label) => {
+          label.textContent = projectSize.size_label;
+          label.classList.remove("stats-kpi-value-loading");
+        });
+      }
+      if (imageFiles && imageFiles.scan_ready && Number(imageFiles.missing_count) > 0) {
+        showMissingFilesToast(imageFiles.missing_label);
+      }
+      if (
+        (!imageFiles || !imageFiles.scan_ready || !projectSize || !projectSize.scan_ready) &&
+        attempt < SYSTEM_STATUS_MAX_ATTEMPTS
+      ) {
+        window.setTimeout(() => loadSystemStatus(attempt + 1), SYSTEM_STATUS_POLL_INTERVAL_MS);
+      }
+    } catch (_error) {
+      // Do not interrupt the page if the informational status check fails.
+    }
+  }
+
   const KEYPOINT_COLORS = {
     lostPoint: "#00d1ff",
     auctionPoint: "#ffb000",
@@ -503,7 +568,10 @@
     initKeypointViewers(root);
   }
 
-  document.addEventListener("DOMContentLoaded", () => initFrontend());
+  document.addEventListener("DOMContentLoaded", () => {
+    initFrontend();
+    loadSystemStatus();
+  });
 
   document.body.addEventListener("htmx:afterSwap", (event) => {
     initFrontend(event.target || document);

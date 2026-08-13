@@ -10,7 +10,7 @@ from frontend import stats as stats_module
 from frontend import stats_storage as stats_storage_module
 from frontend.charts import make_bar_chart, make_line_chart
 from frontend.stats_format import format_bytes, format_int
-from frontend.stats_storage import image_file_metrics
+from frontend.stats_storage import image_file_metrics, project_directory_metrics
 
 
 class StatsHelperTests(unittest.TestCase):
@@ -58,6 +58,20 @@ class StatsHelperTests(unittest.TestCase):
         self.assertEqual(metrics["count"], 2)
         self.assertEqual(metrics["disk_bytes"], 5)
         self.assertEqual(metrics["missing_count"], 1)
+        self.assertTrue(metrics["scan_ready"])
+
+    def test_project_directory_metrics_includes_full_directory_tree(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "nested").mkdir()
+            (root / "root.txt").write_bytes(b"abc")
+            (root / "nested" / "child.txt").write_bytes(b"defgh")
+            with patch.dict(os.environ, {"SMARTMATCH_PROJECT_DIR": tmp_dir}):
+                metrics = project_directory_metrics()
+
+        self.assertGreaterEqual(metrics["size_bytes"], 8)
+        self.assertTrue(metrics["scan_ready"])
+        self.assertNotEqual(metrics["size_label"], "Wird berechnet…")
 
     def test_image_file_metrics_returns_placeholder_while_refreshing_async(self):
         with stats_storage_module._SCAN_CACHE_LOCK:
@@ -76,6 +90,7 @@ class StatsHelperTests(unittest.TestCase):
 
         self.assertEqual(metrics["disk_label"], "xx GB")
         self.assertEqual(metrics["missing_count"], 0)
+        self.assertFalse(metrics["scan_ready"])
         thread_class.assert_called_once()
         thread_class.return_value.start.assert_called_once()
         with stats_storage_module._SCAN_CACHE_LOCK:
@@ -238,8 +253,9 @@ class StatsHelperTests(unittest.TestCase):
                 second = stats_module.get_dashboard_stats(engine)
 
         stats_module.clear_dashboard_stats_cache()
-        self.assertEqual(first, {"call_count": 1})
-        self.assertIs(first, second)
+        self.assertEqual(first["call_count"], 1)
+        self.assertIn("project_size", first)
+        self.assertEqual(second["call_count"], 1)
         self.assertEqual(len(calls), 1)
 
     def test_auction_over_time_counts_total_artworks_by_created_at(self):

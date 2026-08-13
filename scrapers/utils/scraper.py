@@ -83,9 +83,15 @@ class Scraper(ABC):
         self.log_prefix = log_prefix
         # Optional observers set by the orchestrator. The pre-commit fence
         # prevents writes after a worker loses its cross-process ownership lock;
-        # the post-commit observer persists progress counters.
+        # the progress and post-commit observers persist shared run counters.
         self.on_before_batch_commit: Optional[Callable[[], None]] = None
+        self.on_progress: Optional[Callable[[], None]] = None
         self.on_batch_commit: Optional[Callable[[], None]] = None
+
+    def _publish_progress(self) -> None:
+        """Notify the orchestrator after queue discovery or item completion."""
+        if self.on_progress is not None:
+            self.on_progress()
 
     def _commit_batch(self) -> None:
         """Fence ownership, commit pending DB work, then publish progress."""
@@ -107,6 +113,7 @@ class Scraper(ABC):
         urls = list(self.get_urls(skip=skip))
         report_every = max(1, int(report_every))
         self.stats = {"urls_total": len(urls), "urls_processed": 0}
+        self._publish_progress()
 
         # If the caller already opened a DB session, reuse it.
         if self.db.session is not None:
@@ -131,6 +138,7 @@ class Scraper(ABC):
         for idx, url in enumerate(urls, start=1):
             yield url
             self.stats["urls_processed"] = idx
+            self._publish_progress()
 
             if idx == 1 or idx % report_every == 0 or idx == total:
                 elapsed = max(0.0, time.monotonic() - start)

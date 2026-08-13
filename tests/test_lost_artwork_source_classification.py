@@ -51,7 +51,7 @@ class LostArtworkSourceClassificationTests(unittest.TestCase):
     def test_migration_helper_defaults_to_latest_migration(self) -> None:
         helper = (_ROOT / "scripts/apply_production_migration.sh").read_text()
         self.assertIn(
-            "migrations/14_add_lost_artwork_source_classification_view.sql", helper
+            "migrations/15_add_scraper_queue_progress.sql", helper
         )
 
 

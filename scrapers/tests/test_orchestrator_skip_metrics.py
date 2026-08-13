@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -33,6 +34,56 @@ class _FakeSession:
 
 
 class OrchestratorSkipMetricTests(unittest.TestCase):
+    def test_snapshot_queue_progress_persists_worker_stats(self) -> None:
+        updated_at = datetime(2026, 8, 12, tzinfo=timezone.utc)
+        run = SimpleNamespace(
+            queue_total=0,
+            queue_processed=0,
+            progress_updated_at=None,
+        )
+        scraper = SimpleNamespace(
+            stats={"urls_total": 40, "urls_processed": 12},
+        )
+
+        Orchestrator._snapshot_queue_progress(
+            run,
+            scraper,
+            updated_at=updated_at,
+        )
+
+        self.assertEqual(run.queue_total, 40)
+        self.assertEqual(run.queue_processed, 12)
+        self.assertEqual(run.progress_updated_at, updated_at)
+
+    def test_persisted_progress_supports_cross_process_dashboard(self) -> None:
+        now = datetime(2026, 8, 12, 12, 5, tzinfo=timezone.utc)
+        run = SimpleNamespace(
+            run_id="run-1",
+            started_at=now - timedelta(minutes=5),
+            entries_scraped=8,
+            entries_skipped=2,
+            total_entries=108,
+            queue_total=40,
+            queue_processed=10,
+            progress_updated_at=now - timedelta(seconds=1),
+        )
+
+        progress = Orchestrator._persisted_run_progress(
+            run,
+            total_entries=108,
+            now=now,
+        )
+
+        self.assertEqual(progress["urls_total"], 40)
+        self.assertEqual(progress["urls_processed"], 10)
+        self.assertEqual(progress["progress_percent"], 25.0)
+        self.assertEqual(progress["elapsed_seconds"], 300)
+        self.assertEqual(progress["eta_seconds"], 900)
+        self.assertEqual(
+            progress["progress_updated_at"],
+            "2026-08-12T12:04:59+00:00",
+        )
+
     def test_calculate_entries_skipped_includes_prefiltered_lots(self) -> None:
         scraper = SimpleNamespace(
             stats={"urls_skipped_prefiltered": 4},

@@ -7,7 +7,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ENV_FILE:-$ROOT_DIR/.env.docker}"
 DB_SERVICE="${DB_SERVICE:-db}"
 BACKUP_DIR="${BACKUP_DIR:-$ROOT_DIR/local/db-backups}"
-DEFAULT_MIGRATION="$ROOT_DIR/db/init-production/migrations/14_add_lost_artwork_source_classification_view.sql"
+DEFAULT_MIGRATION="$ROOT_DIR/db/init-production/migrations/15_add_scraper_queue_progress.sql"
 
 if [[ $# -eq 0 ]]; then
   set -- "$DEFAULT_MIGRATION"

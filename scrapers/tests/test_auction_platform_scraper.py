@@ -112,6 +112,22 @@ class AuctionPlatformScraperTests(unittest.TestCase):
         # idx 2 + idx 4 + final commit at end
         self.assertEqual(db.commits, 3)
 
+    def test_run_publishes_queue_progress_after_discovery_and_each_item(self) -> None:
+        db = _FakeDB()
+        scraper = _DummyAuctionScraper(
+            db=db,
+            urls=["a", "b", "c"],
+            commit_every=10,
+        )
+        snapshots: list[tuple[int, int]] = []
+        scraper.on_progress = lambda: snapshots.append(
+            (scraper.stats["urls_total"], scraper.stats["urls_processed"])
+        )
+
+        scraper.run(report_every=10)
+
+        self.assertEqual(snapshots, [(3, 0), (3, 1), (3, 2), (3, 3)])
+
     def test_run_with_no_urls_still_calls_after_hook(self) -> None:
         db = _FakeDB()
         scraper = _DummyAuctionScraper(db=db, urls=[])

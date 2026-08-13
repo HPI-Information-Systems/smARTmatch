@@ -782,6 +782,11 @@ class ScraperRun(Base):
     entries_scraped: Mapped[int] = mapped_column(Integer, nullable=False)
     entries_skipped: Mapped[int] = mapped_column(Integer, nullable=False)
     total_entries: Mapped[int] = mapped_column(Integer, nullable=False)
+    queue_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    queue_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    progress_updated_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
     error_message: Mapped[Optional[str]] = mapped_column(Text)
 
 

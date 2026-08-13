@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import inspect
+import logging
 import math
 import os
 import sys
@@ -39,6 +40,9 @@ from scrapers.db_interface import AuctionArtwork, AuctionPlatform, Database, Los
 from scrapers.run_lock import try_acquire_scraper_lock
 from scrapers.runtime_config import load_request_cooldown_override
 from scrapers.utils.image_storage import platform_image_prefix
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +65,9 @@ class ScraperRun(_OrchestratorBase):
     entries_scraped = Column(Integer, nullable=False, default=0)
     entries_skipped = Column(Integer, nullable=False, default=0)
     total_entries = Column(Integer, nullable=False, default=0)
+    queue_total = Column(Integer, nullable=False, default=0)
+    queue_processed = Column(Integer, nullable=False, default=0)
+    progress_updated_at = Column(DateTime(timezone=True))
     error_message = Column(Text)
 
 
@@ -123,6 +130,7 @@ class Orchestrator:
     """Main orchestrator for running and monitoring scrapers."""
 
     DEFAULT_REQUEST_COOLDOWN_SECONDS: float = 5.0
+    PROGRESS_FLUSH_INTERVAL_SECONDS: float = 2.0
     REQUEST_COOLDOWN_ENV_VARS: tuple[str, ...] = (
         "SCRAPER_REQUEST_COOLDOWN_SECONDS",
         "SMARTMATCH_SCRAPER_REQUEST_COOLDOWN_SECONDS",
@@ -283,6 +291,25 @@ class Orchestrator:
             else cls._INTERRUPTED_MSG
         )
 
+    @classmethod
+    def _snapshot_queue_progress(
+        cls,
+        run: ScraperRun,
+        scraper_instance: Any,
+        *,
+        updated_at: Optional[datetime] = None,
+    ) -> None:
+        """Copy process-local queue counters onto a shared run row."""
+        stats = getattr(scraper_instance, "stats", None)
+        if not isinstance(stats, dict):
+            return
+
+        queue_total = cls._to_non_negative_int(stats.get("urls_total"))
+        queue_processed = cls._to_non_negative_int(stats.get("urls_processed"))
+        run.queue_processed = queue_processed
+        run.queue_total = max(queue_total, queue_processed)
+        run.progress_updated_at = updated_at or datetime.now(timezone.utc)
+
     def _backfill_counts(
         self,
         session: Session,
@@ -299,6 +326,8 @@ class Orchestrator:
         """
         if run.scraper_name not in SCRAPER_REGISTRY:
             return
+        if scraper_instance is not None:
+            self._snapshot_queue_progress(run, scraper_instance)
         try:
             count_after = self._count_entries(session, run.scraper_name)
         except Exception:
@@ -310,29 +339,43 @@ class Orchestrator:
         run.entries_scraped = max(0, count_after - baseline)
         if scraper_instance is None:
             return
-        stats = getattr(scraper_instance, "stats", {}) or {}
         run.entries_skipped = self._calculate_entries_skipped(
-            urls_processed=stats.get("urls_processed", 0),
+            urls_processed=run.queue_processed,
             entries_scraped=run.entries_scraped,
             scraper_instance=scraper_instance,
         )
 
-    def _flush_progress(self, run_id: Any, scraper_instance: Any) -> None:
+    def _flush_progress(
+        self,
+        run_id: Any,
+        scraper_instance: Any,
+        *,
+        include_entry_counts: bool = True,
+    ) -> None:
         """Snapshot live counters onto the run row in its own session.
 
-        Invoked from ``Scraper.on_batch_commit`` after every batch commit.
-        All errors are swallowed: a missed checkpoint must never break the
-        scrape loop.
+        Frequent queue updates avoid expensive table counts; batch checkpoints
+        additionally refresh New/Skipped/Total. A missed checkpoint must never
+        break the scrape loop, but it is logged so frozen progress is diagnosable.
         """
         session = self._session()
         try:
             run = session.get(ScraperRun, run_id)
             if run is None or run.status != "running":
                 return
-            self._backfill_counts(session, run, scraper_instance=scraper_instance)
+            if include_entry_counts:
+                self._backfill_counts(session, run, scraper_instance=scraper_instance)
+            else:
+                self._snapshot_queue_progress(run, scraper_instance)
             session.commit()
         except Exception:
             session.rollback()
+            logger.warning(
+                "scraper=%s run_id=%s progress checkpoint failed",
+                getattr(scraper_instance, "platform_name", "unknown"),
+                run_id,
+                exc_info=True,
+            )
         finally:
             session.close()
 
@@ -634,15 +677,35 @@ class Orchestrator:
                     "started_at": datetime.now(timezone.utc),
                 }
 
-            # Flush live counters to the run row alongside each batch commit
-            # so an interrupted run still has accurate New/Skipped/Total.
+            # Publish queue counters independently of process memory so the
+            # dashboard can observe child workers. Batch commits also refresh
+            # DB-derived New/Skipped/Total values.
+            last_progress_flush = 0.0
+
+            def publish_progress() -> None:
+                nonlocal last_progress_flush
+                now = time.monotonic()
+                if now - last_progress_flush < self.PROGRESS_FLUSH_INTERVAL_SECONDS:
+                    return
+                if _lease is not None:
+                    _lease.ensure_held()
+                self._flush_progress(
+                    run_id,
+                    scraper_instance,
+                    include_entry_counts=False,
+                )
+                last_progress_flush = now
+
             def checkpoint_progress() -> None:
+                nonlocal last_progress_flush
                 if _lease is not None:
                     _lease.ensure_held()
                 self._flush_progress(run_id, scraper_instance)
+                last_progress_flush = time.monotonic()
 
             if _lease is not None:
                 scraper_instance.on_before_batch_commit = _lease.ensure_held
+            scraper_instance.on_progress = publish_progress
             scraper_instance.on_batch_commit = checkpoint_progress
 
             # A lost lock fences this worker at startup, each batch commit, and
@@ -669,6 +732,7 @@ class Orchestrator:
             run.entries_scraped = new_entries
             run.entries_skipped = skipped
             run.total_entries = count_after
+            self._snapshot_queue_progress(run, scraper_instance)
             session.commit()
 
             result = {
@@ -704,6 +768,8 @@ class Orchestrator:
             run.entries_scraped = new_entries
             run.entries_skipped = skipped
             run.total_entries = count_after
+            if scraper_instance is not None:
+                self._snapshot_queue_progress(run, scraper_instance)
             run.error_message = error_traceback
             session.commit()
             result = {
@@ -755,6 +821,69 @@ class Orchestrator:
         with self._lock:
             t = self._running.get(scraper_name)
             return t is not None and t.is_alive()
+
+    @classmethod
+    def _persisted_run_progress(
+        cls,
+        run: ScraperRun,
+        *,
+        total_entries: int,
+        now: Optional[datetime] = None,
+    ) -> dict[str, Any]:
+        """Build dashboard progress from the process-shared run record."""
+        queue_total = cls._to_non_negative_int(getattr(run, "queue_total", 0))
+        queue_processed = cls._to_non_negative_int(
+            getattr(run, "queue_processed", 0)
+        )
+        queue_total = max(queue_total, queue_processed)
+
+        started_at = run.started_at
+        if started_at and started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=timezone.utc)
+        current_time = now or datetime.now(timezone.utc)
+        elapsed_seconds = 0
+        if started_at:
+            elapsed_seconds = max(
+                0,
+                int((current_time - started_at).total_seconds()),
+            )
+
+        progress_percent = None
+        if queue_total > 0:
+            progress_percent = round(
+                min(100.0, (queue_processed / queue_total) * 100.0),
+                1,
+            )
+
+        eta_seconds = None
+        if elapsed_seconds > 0 and 0 < queue_processed < queue_total:
+            rate = queue_processed / elapsed_seconds
+            if rate > 0:
+                eta_seconds = int((queue_total - queue_processed) / rate)
+
+        return {
+            "run_id": str(run.run_id),
+            "urls_total": queue_total,
+            "urls_processed": queue_processed,
+            "entries_scraped_estimate": cls._to_non_negative_int(
+                run.entries_scraped
+            ),
+            "entries_skipped_estimate": cls._to_non_negative_int(
+                run.entries_skipped
+            ),
+            "total_entries_estimate": max(
+                cls._to_non_negative_int(total_entries),
+                cls._to_non_negative_int(run.total_entries),
+            ),
+            "progress_percent": progress_percent,
+            "elapsed_seconds": elapsed_seconds,
+            "eta_seconds": eta_seconds,
+            "progress_updated_at": (
+                run.progress_updated_at.isoformat()
+                if getattr(run, "progress_updated_at", None)
+                else None
+            ),
+        }
 
     def get_all_status(self) -> list[dict]:
         """Return status overview for all scrapers."""
@@ -829,29 +958,10 @@ class Orchestrator:
 
                 persisted_running = bool(last_run and last_run.status == "running")
                 if progress is None and persisted_running:
-                    started_at = last_run.started_at
-                    if started_at and started_at.tzinfo is None:
-                        started_at = started_at.replace(tzinfo=timezone.utc)
-                    elapsed_seconds = 0
-                    if started_at:
-                        elapsed_seconds = max(
-                            0,
-                            int((datetime.now(timezone.utc) - started_at).total_seconds()),
-                        )
-                    progress = {
-                        "run_id": str(last_run.run_id),
-                        "urls_total": 0,
-                        "urls_processed": 0,
-                        "entries_scraped_estimate": int(last_run.entries_scraped or 0),
-                        "entries_skipped_estimate": int(last_run.entries_skipped or 0),
-                        "total_entries_estimate": max(
-                            total,
-                            int(last_run.total_entries or 0),
-                        ),
-                        "progress_percent": None,
-                        "elapsed_seconds": elapsed_seconds,
-                        "eta_seconds": None,
-                    }
+                    progress = self._persisted_run_progress(
+                        last_run,
+                        total_entries=total,
+                    )
 
                 results.append({
                     "name": name,
@@ -954,6 +1064,11 @@ def _run_to_dict(run: ScraperRun) -> dict:
         "entries_scraped": run.entries_scraped,
         "entries_skipped": run.entries_skipped,
         "total_entries": run.total_entries,
+        "queue_processed": run.queue_processed,
+        "queue_total": run.queue_total,
+        "progress_updated_at": (
+            run.progress_updated_at.isoformat() if run.progress_updated_at else None
+        ),
         "error_message": run.error_message,
     }
 

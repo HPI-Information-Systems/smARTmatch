@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from typing import Iterable, Optional
 
+from bs4 import BeautifulSoup
 from sqlalchemy import text
 
 from ..db_interface import Auctioneer, Database
 from ..utils.auction_helpers import clean_whitespace, fit_varchar, json_dumps
 from ..utils.auction_scraper import AuctionPlatformScraper
 from ..utils.browser import PlaywrightFetchMixin
-from .constants import BASE_URL, GEMAELDE_URL, PAGE_COUNT_RE
+from ..utils.request_handler import request_html
+from .constants import BASE_URL, GEMAELDE_URL, LOT_LINK_RE, PAGE_COUNT_RE, PARSER
 from .entities import resolve_artist_id, resolve_auctioneer
 from .parser import LottissimoLotParser
 
@@ -44,15 +46,59 @@ class LottissimoScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
         self._auctioneer_cache: dict[str, Optional[Auctioneer]] = {}
         self._parser = LottissimoLotParser(log=self.log)
 
-    def _prepare_run(self) -> None:
-        self._start_browser()
-
     def _after_run(self) -> None:
         self._stop_browser()
 
     def fetch_html(self, url: str, wait_for_selector: Optional[str] = None) -> str:
+        """Prefer a complete server-rendered page, then fall back to Chromium."""
         self.log(f"[get] {url}")
+        html = request_html(
+            url,
+            min_wait=self.min_wait,
+            max_wait=self.max_wait,
+            log=self.log,
+        )
+        if self._http_page_is_usable(
+            url=url,
+            html=html or "",
+            wait_for_selector=wait_for_selector,
+        ):
+            return html or ""
+
+        self.log("[http] incomplete or blocked response; falling back to Playwright")
         return self.fetch_html_playwright(url, wait_for_selector=wait_for_selector)
+
+    def _http_page_is_usable(
+        self,
+        *,
+        url: str,
+        html: str,
+        wait_for_selector: Optional[str],
+    ) -> bool:
+        """Reject challenge, soft-error, and partial pages before parsing."""
+        if len(html) < 5_000 or "AwsWafIntegration" in html:
+            return False
+
+        soup = BeautifulSoup(html, PARSER)
+        title = soup.title.get_text(" ", strip=True).casefold() if soup.title else ""
+        if "error" in title and not soup.select_one("h1.header-lot-title"):
+            return False
+
+        if wait_for_selector:
+            try:
+                return soup.select_one(wait_for_selector) is not None
+            except Exception:
+                return False
+
+        if LOT_LINK_RE.search(url):
+            metadata = self._parser._extract_datalayer_dict(html)
+            return bool(
+                soup.select_one("h1.header-lot-title")
+                and metadata
+                and (metadata.get("lotId") or "").strip()
+            )
+
+        return True
 
     def get_urls(self, skip: int = 0) -> Iterable[str]:
         page_urls = self._get_page_urls()
@@ -155,7 +201,7 @@ class LottissimoScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
 
     def _get_page_urls(self) -> list[str]:
         def pages_for(url: str) -> list[str]:
-            html = self.fetch_html(url)
+            html = self.fetch_html(url, wait_for_selector='a[href*="/lot-"]')
             if not html:
                 return []
 

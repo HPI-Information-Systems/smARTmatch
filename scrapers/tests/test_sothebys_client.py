@@ -63,6 +63,53 @@ class SothebysClientTests(unittest.TestCase):
 
         self.assertEqual(auction_id, "123e4567-e89b-12d3-a456-426614174000")
 
+    def test_extract_auction_id_decodes_apollo_relay_id(self) -> None:
+        cache_payload = {
+            "props": {
+                "pageProps": {
+                    "apolloCache": {
+                        "Auction:QXVjdGlvbl9mMGVlYTc4OS1kNGM1LTRjOTctYmQzOC1mMDQyN2Q3Y2Q3YTQ=": {
+                            "__typename": "Auction"
+                        }
+                    }
+                }
+            }
+        }
+        html = (
+            "<html><body>"
+            '<script id="__NEXT_DATA__" type="application/json">'
+            + __import__("json").dumps(cache_payload)
+            + "</script></body></html>"
+        )
+
+        auction_id = self.client.extract_auction_id(html)
+
+        self.assertEqual(auction_id, "f0eea789-d4c5-4c97-bd38-f0427d7cd7a4")
+
+    def test_extract_auction_id_skips_malformed_cache_key(self) -> None:
+        cache_payload = {
+            "props": {
+                "pageProps": {
+                    "apolloCache": {
+                        "Auction:☃": {"__typename": "Auction"},
+                        "Auction:123e4567-e89b-12d3-a456-426614174000": {
+                            "__typename": "Auction"
+                        },
+                    }
+                }
+            }
+        }
+        html = (
+            '<script id="__NEXT_DATA__" type="application/json">'
+            + __import__("json").dumps(cache_payload)
+            + "</script>"
+        )
+
+        self.assertEqual(
+            self.client.extract_auction_id(html),
+            "123e4567-e89b-12d3-a456-426614174000",
+        )
+
     def test_extract_auction_id_raises_when_next_data_missing(self) -> None:
         with self.assertRaises(ValueError):
             self.client.extract_auction_id("<html><body>nope</body></html>")

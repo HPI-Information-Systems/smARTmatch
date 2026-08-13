@@ -256,10 +256,13 @@ CREATE TABLE IF NOT EXISTS scraper_run (
     status          varchar(20)  NOT NULL DEFAULT 'running',
     started_at      timestamptz  NOT NULL DEFAULT now(),
     finished_at     timestamptz,
-    entries_scraped integer      NOT NULL DEFAULT 0,
-    entries_skipped integer      NOT NULL DEFAULT 0,
-    total_entries   integer      NOT NULL DEFAULT 0,
-    error_message   text
+    entries_scraped    integer      NOT NULL DEFAULT 0,
+    entries_skipped    integer      NOT NULL DEFAULT 0,
+    total_entries      integer      NOT NULL DEFAULT 0,
+    queue_total        integer      NOT NULL DEFAULT 0,
+    queue_processed    integer      NOT NULL DEFAULT 0,
+    progress_updated_at timestamptz,
+    error_message      text
 );
 
 CREATE TABLE IF NOT EXISTS match_score (

@@ -58,6 +58,7 @@ class AuctionPlatformScraper(Scraper):
 
             urls = list(self.get_urls(skip=skip))
             self.stats = {"urls_total": len(urls), "urls_processed": 0}
+            self._publish_progress()
 
             if not urls:
                 self.log("[done] no URLs to scrape")

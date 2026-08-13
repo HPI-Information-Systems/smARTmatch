@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
+from uuid import UUID
 
 from .constants import HREF_PATTERN, NEXT_DATA_PATTERN
 
@@ -39,8 +42,28 @@ def extract_buy_links(html: str, *, base_url: str) -> list[str]:
     return links
 
 
+def _normalize_auction_id(value: str) -> str | None:
+    """Return the UUID expected by Sotheby's API from raw or Relay IDs."""
+
+    candidates = [value]
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        decoded = base64.b64decode(padded, altchars=b"-_", validate=True).decode("utf-8")
+        if decoded.startswith("Auction_"):
+            candidates.append(decoded.removeprefix("Auction_"))
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        pass
+
+    for candidate in candidates:
+        try:
+            return str(UUID(candidate))
+        except (AttributeError, ValueError):
+            continue
+    return None
+
+
 def extract_auction_id(html: str) -> str:
-    """Pull the auctionId out of the page's ``__NEXT_DATA__`` Apollo cache."""
+    """Pull the API auction UUID out of the page's ``__NEXT_DATA__`` Apollo cache."""
 
     match = NEXT_DATA_PATTERN.search(html)
     if not match:
@@ -60,7 +83,10 @@ def extract_auction_id(html: str) -> str:
         raise ValueError("__NEXT_DATA__ apolloCache is missing or malformed.")
 
     for key in cache:
-        if isinstance(key, str) and key.startswith("Auction:"):
-            return key.split(":", 1)[1]
+        if not isinstance(key, str) or not key.startswith("Auction:"):
+            continue
+        auction_id = _normalize_auction_id(key.split(":", 1)[1])
+        if auction_id is not None:
+            return auction_id
 
-    raise ValueError("No Auction:* key found inside the __NEXT_DATA__ apollo cache.")
+    raise ValueError("No usable Auction UUID found inside the __NEXT_DATA__ apollo cache.")

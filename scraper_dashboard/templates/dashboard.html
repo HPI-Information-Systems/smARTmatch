@@ -61,7 +61,7 @@
         <dl class="card-stats">
           <div class="stat-row">
             <dt>Total entries</dt>
-            <dd class="stat-total">{% if s.progress %}{{ s.progress.urls_total }}{% else %}{{ s.total_entries | default(0) }}{% endif %}</dd>
+            <dd class="stat-total">{% if s.progress and s.is_running and s.progress.urls_total > 0 %}{{ s.progress.urls_total }}{% else %}{{ s.total_entries | default(0) }}{% endif %}</dd>
           </div>
           <div class="stat-row">
             <dt>DB entries</dt>
@@ -72,16 +72,18 @@
             <dd>
               <span class="stat-processed">{% if s.progress %}{{ s.progress.urls_processed }}{% else %}0{% endif %}</span>
               /
-              <span class="stat-queue-total">{% if s.progress %}{{ s.progress.urls_total }}{% else %}0{% endif %}</span>
+              <span class="stat-queue-total">{% if s.progress and s.progress.urls_total > 0 %}{{ s.progress.urls_total }}{% else %}--{% endif %}</span>
             </dd>
           </div>
           <div class="progress-wrap" aria-label="Run progress">
             <div class="progress-bar-bg">
-              <div class="progress-bar-fill" style="width: {% if s.progress %}{{ s.progress.progress_percent }}{% else %}0{% endif %}%;"></div>
+              <div class="progress-bar-fill" style="width: {% if s.progress and s.progress.progress_percent is number %}{{ s.progress.progress_percent }}{% else %}0{% endif %}%;"></div>
             </div>
             <div class="progress-label stat-progress-label">
-              {% if s.progress %}
+              {% if s.progress and s.is_running and s.progress.progress_percent is number %}
                 {{ s.progress.progress_percent }}% (live)
+              {% elif s.progress and s.is_running %}
+                discovering total...
               {% else %}
                 idle
               {% endif %}
@@ -304,43 +306,51 @@
       btn.textContent = 'Run All Scrapers';
     }
 
-    let pollingIntervals = {};
+    const previousRunning = new Map();
+    const pendingStarts = new Map();
+    let statusRefreshInFlight = false;
 
     function pollStatus(name) {
-      if (pollingIntervals[name]) return;
+      // The single global refresh loop observes every scraper. Keep a short
+      // grace period so a just-launched worker can create its run row before
+      // an idle response resets the button.
       setBadge(name, 'running');
-
-      pollingIntervals[name] = setInterval(async () => {
-        const statuses = await (await fetch('/api/status')).json();
-        const s = statuses.find(x => x.name === name);
-        if (!s) return;
-
-        updateGlobalProgress(statuses);
-        updateCard(s);
-
-        if (!s.is_running) {
-          clearInterval(pollingIntervals[name]);
-          delete pollingIntervals[name];
-          loadHistory(name);
-          loadChart(name);
-        }
-      }, 3000);
+      previousRunning.set(name, true);
+      pendingStarts.set(name, Date.now());
     }
 
     function startPollingAll() {
-      document.querySelectorAll('.card').forEach(card => {
-        const name = card.dataset.scraper;
-        pollStatus(name);
-      });
+      document.querySelectorAll('.card').forEach(card => pollStatus(card.dataset.scraper));
     }
 
     async function refreshStatus() {
+      if (statusRefreshInFlight) return;
+      statusRefreshInFlight = true;
       try {
-        const statuses = await (await fetch('/api/status')).json();
+        const res = await fetch('/api/status');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const statuses = await res.json();
+        if (!Array.isArray(statuses)) throw new Error('Invalid status response');
+
         updateGlobalProgress(statuses);
-        statuses.forEach(updateCard);
+        statuses.forEach(s => {
+          const pendingAt = pendingStarts.get(s.name);
+          const pending = pendingAt && (Date.now() - pendingAt) < 10000;
+          if (s.is_running) pendingStarts.delete(s.name);
+          if (!s.is_running && pending) return;
+
+          const wasRunning = previousRunning.get(s.name) === true;
+          updateCard(s);
+          previousRunning.set(s.name, s.is_running);
+          if (wasRunning && !s.is_running) {
+            loadHistory(s.name);
+            loadChart(s.name);
+          }
+        });
       } catch (e) {
         console.error('Refresh failed', e);
+      } finally {
+        statusRefreshInFlight = false;
       }
     }
 
@@ -646,10 +656,10 @@
         loadChart(card.dataset.scraper);
       });
 
-      // Auto-poll any that are currently running.
+      // Seed transition tracking for runs already active at page load.
       document.querySelectorAll('.badge-running').forEach(badge => {
         const card = badge.closest('.card');
-        if (card) pollStatus(card.dataset.scraper);
+        if (card) previousRunning.set(card.dataset.scraper, true);
       });
 
       loadCooldown();

@@ -97,6 +97,8 @@ class LostArtScraper(Scraper):
 
         urls = list(self.get_urls(skip=skip))
         report_every = max(1, int(report_every))
+        self.stats = {"urls_total": len(urls), "urls_processed": 0}
+        self._publish_progress()
 
         if self.db.session is not None:
             for url in self._iter_urls_with_eta(urls, report_every=report_every):

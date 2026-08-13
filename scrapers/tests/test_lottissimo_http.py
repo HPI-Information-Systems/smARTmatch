@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import call, patch
+from unittest.mock import patch
 
 from scrapers.lottissimo.scraper import LottissimoScraper
 
@@ -20,32 +20,47 @@ class LottissimoHttpTests(unittest.TestCase):
             **kwargs,
         )
 
-    def test_fetch_html_delegates_to_playwright(self) -> None:
+    def test_fetch_html_prefers_server_rendered_response(self) -> None:
         scraper = self._build_scraper()
 
-        with patch.object(
-            scraper,
-            "fetch_html_playwright",
-            return_value="<html>lots</html>",
-        ) as pw_mock:
+        listing_html = (
+            '<html><a href="/de-de/auction-catalogues/house/'
+            'catalogue-id-sale/lot-abc">lot</a>'
+            + (" " * 5_000)
+            + "</html>"
+        )
+        with (
+            patch(
+                "scrapers.lottissimo.scraper.request_html",
+                return_value=listing_html,
+            ) as http_mock,
+            patch.object(scraper, "fetch_html_playwright") as pw_mock,
+        ):
             result = scraper.fetch_html("https://www.lot-tissimo.com/de/")
 
-        self.assertEqual(result, "<html>lots</html>")
-        pw_mock.assert_called_once_with(
-            "https://www.lot-tissimo.com/de/",
-            wait_for_selector=None,
-        )
+        self.assertIn("lot-abc", result)
+        http_mock.assert_called_once()
+        pw_mock.assert_not_called()
 
-    def test_fetch_html_passes_wait_for_selector(self) -> None:
+    def test_fetch_html_falls_back_when_expected_listing_content_is_absent(self) -> None:
         scraper = self._build_scraper()
         selector = 'a[href*="/lot-"]'
 
-        with patch.object(
-            scraper,
-            "fetch_html_playwright",
-            return_value="<html>lots</html>",
-        ) as pw_mock:
-            result = scraper.fetch_html("https://www.lot-tissimo.com/de/", wait_for_selector=selector)
+        with (
+            patch(
+                "scrapers.lottissimo.scraper.request_html",
+                return_value="<html><title>Consent</title>" + (" " * 5_000) + "</html>",
+            ),
+            patch.object(
+                scraper,
+                "fetch_html_playwright",
+                return_value="<html>lots</html>",
+            ) as pw_mock,
+        ):
+            result = scraper.fetch_html(
+                "https://www.lot-tissimo.com/de/",
+                wait_for_selector=selector,
+            )
 
         self.assertEqual(result, "<html>lots</html>")
         pw_mock.assert_called_once_with(
@@ -53,13 +68,62 @@ class LottissimoHttpTests(unittest.TestCase):
             wait_for_selector=selector,
         )
 
-    def test_prepare_run_starts_browser(self) -> None:
+    def test_fetch_html_falls_back_to_playwright_for_waf_response(self) -> None:
+        scraper = self._build_scraper()
+        selector = 'a[href*="/lot-"]'
+
+        with (
+            patch(
+                "scrapers.lottissimo.scraper.request_html",
+                return_value="<html>AwsWafIntegration</html>",
+            ),
+            patch.object(
+                scraper,
+                "fetch_html_playwright",
+                return_value="<html>lots</html>",
+            ) as pw_mock,
+        ):
+            result = scraper.fetch_html(
+                "https://www.lot-tissimo.com/de/",
+                wait_for_selector=selector,
+            )
+
+        self.assertEqual(result, "<html>lots</html>")
+        pw_mock.assert_called_once_with(
+            "https://www.lot-tissimo.com/de/",
+            wait_for_selector=selector,
+        )
+
+    def test_fetch_html_rejects_malformed_lot_detail(self) -> None:
+        scraper = self._build_scraper()
+        lot_url = (
+            "https://www.lot-tissimo.com/de-de/auction-catalogues/house/"
+            "catalogue-id-sale/lot-abc"
+        )
+
+        with (
+            patch(
+                "scrapers.lottissimo.scraper.request_html",
+                return_value="<html><title>Lot</title>" + (" " * 5_000) + "</html>",
+            ),
+            patch.object(
+                scraper,
+                "fetch_html_playwright",
+                return_value="<html>browser detail</html>",
+            ) as pw_mock,
+        ):
+            result = scraper.fetch_html(lot_url)
+
+        self.assertEqual(result, "<html>browser detail</html>")
+        pw_mock.assert_called_once_with(lot_url, wait_for_selector=None)
+
+    def test_prepare_run_does_not_start_browser_eagerly(self) -> None:
         scraper = self._build_scraper()
 
         with patch.object(scraper, "_start_browser") as mock_start:
             scraper._prepare_run()
 
-        mock_start.assert_called_once()
+        mock_start.assert_not_called()
 
     def test_after_run_stops_browser(self) -> None:
         scraper = self._build_scraper()

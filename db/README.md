@@ -65,6 +65,8 @@ fi
 
 Without an argument the helper applies its current default migration. It reads `ENV_FILE`, not `SMARTMATCH_ENV_FILE`. Set `DB_SERVICE` or `BACKUP_DIR` when needed. Each SQL file runs separately: if a later file fails, earlier files remain applied. Review and apply migrations exactly once in release order, then verify logs before restoring traffic.
 
+The current migration, `15_add_scraper_queue_progress.sql`, adds process-shared queue counters used by the scraper dashboard. Apply it before deploying workers that use the updated `ScraperRun` model.
+
 ## Lost-artwork source classification
 
 `lost_artwork_source_classification` assigns an auditable source category without relying on `institution_id`. The imported data contains unrelated LostArt records linked to the SPSG institution, so the view instead uses embedded SPSG provenance and SPSG identity in restricted LostArt reporter/contact fields.

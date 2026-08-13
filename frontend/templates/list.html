@@ -74,6 +74,15 @@
                         {% if rating is not none %}<input type="hidden" name="rating" value="{{ rating }}" />{% endif %}
                         {% if bookmarked is not none %}<input type="hidden" name="bookmarked" value="{{ bookmarked }}" />{% endif %}
                     {% endif %}
+                    {% if source_filter_options|length > 0 %}
+                        <label for="source-filter" class="form-label">Institution</label>
+                        <select class="form-select mb-3" name="source_filter" id="source-filter">
+                            <option value="all" {% if source_filter == 'all' %}selected{% endif %}>Alle Institutionen</option>
+                            {% for option in source_filter_options %}
+                                <option value="{{ option.value }}" {% if source_filter == option.value %}selected{% endif %}>{{ option.label }}</option>
+                            {% endfor %}
+                        </select>
+                    {% endif %}
                     <label for="sort" class="form-label">Sortieren</label>
                     <select class="form-select mb-3" name="sort" id="sort">
                         <option value="similarity" {% if sort == 'similarity' %}selected{% endif %}>Similarity</option>
@@ -125,8 +134,8 @@
             {% endif %}
             <div class="px-1 match-list-items">
                 {% for match in matches %}
-                    {% set detail_url = url_for('match', match_id=match.match_id, rating=rating, sort=sort, bookmarked=bookmarked, search=search, image_weight=image_weight) %}
-                    {% set return_url = url_for('match_list', page=page, rating=rating, sort=sort, bookmarked=bookmarked, search=search, image_weight=image_weight) %}
+                    {% set detail_url = url_for('match', match_id=match.match_id, rating=rating, sort=sort, bookmarked=bookmarked, search=search, source_filter=source_filter, image_weight=image_weight) %}
+                    {% set return_url = url_for('match_list', page=page, rating=rating, sort=sort, bookmarked=bookmarked, search=search, source_filter=source_filter, image_weight=image_weight) %}
                     {% set lost_dimensions = dimensions_label(match.lost_artwork) %}
                     {% set auction_dimensions = dimensions_label(match.auction_artwork) %}
                     {% set auction_artist = auction_artist_label(match.auction_artwork) %}
@@ -199,6 +208,7 @@
                                             {% if sort is not none %}<input type="hidden" name="sort" value="{{ sort }}" />{% endif %}
                                             {% if bookmarked is not none %}<input type="hidden" name="bookmarked" value="{{ bookmarked }}" />{% endif %}
                                             {% if search %}<input type="hidden" name="search" value="{{ search }}" />{% endif %}
+                                            {% if source_filter %}<input type="hidden" name="source_filter" value="{{ source_filter }}" />{% endif %}
                                             <input type="hidden" name="image_weight" value="{{ image_weight }}" />
                                             <input type="hidden" name="return-url" value="{{ return_url }}" />
                                             <button class="btn btn-danger btn-sm match-list-discard-button"
@@ -391,6 +401,7 @@
                                         {% if sort is not none %}<input type="hidden" name="sort" value="{{ sort }}" />{% endif %}
                                         {% if bookmarked is not none %}<input type="hidden" name="bookmarked" value="{{ bookmarked }}" />{% endif %}
                                         {% if search %}<input type="hidden" name="search" value="{{ search }}" />{% endif %}
+                                        {% if source_filter %}<input type="hidden" name="source_filter" value="{{ source_filter }}" />{% endif %}
                                         <input type="hidden" name="image_weight" value="{{ image_weight }}" />
                                         <input type="hidden" name="return-url" value="{{ return_url }}" />
                                         <button class="btn btn-danger btn-sm match-list-discard-button"
@@ -421,7 +432,7 @@
                     {% if page - 1 > 0 %}
                         <li class="page-item">
                             <a class="page-link"
-                               href="{{ url_for('match_list', page=(page - 1), rating=rating, sort=sort, bookmarked=bookmarked, search=search, image_weight=image_weight) }}">
+                               href="{{ url_for('match_list', page=(page - 1), rating=rating, sort=sort, bookmarked=bookmarked, search=search, source_filter=source_filter, image_weight=image_weight) }}">
                                 <i class="bi bi-arrow-left" aria-hidden="true"></i>
                             </a>
                         </li>
@@ -430,14 +441,14 @@
                         {% if page + i > 0 and page + i <= max_page %}
                             <li class="page-item {% if page + i == page %}active{% endif %}">
                                 <a class="page-link"
-                                   href="{{ url_for('match_list', page=(page + i), rating=rating, sort=sort, bookmarked=bookmarked, search=search, image_weight=image_weight) }}">{{ page + i }}</a>
+                                   href="{{ url_for('match_list', page=(page + i), rating=rating, sort=sort, bookmarked=bookmarked, search=search, source_filter=source_filter, image_weight=image_weight) }}">{{ page + i }}</a>
                             </li>
                         {% endif %}
                     {% endfor %}
                     {% if page + 1 <= max_page %}
                         <li class="page-item">
                             <a class="page-link"
-                               href="{{ url_for('match_list', page=(page + 1), rating=rating, sort=sort, bookmarked=bookmarked, search=search, image_weight=image_weight) }}">
+                               href="{{ url_for('match_list', page=(page + 1), rating=rating, sort=sort, bookmarked=bookmarked, search=search, source_filter=source_filter, image_weight=image_weight) }}">
                                 <i class="bi bi-arrow-right" aria-hidden="true"></i>
                             </a>
                         </li>

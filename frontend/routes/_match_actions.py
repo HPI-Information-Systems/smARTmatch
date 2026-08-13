@@ -12,6 +12,9 @@ def filter_query_args_from_form():
         "sort": request.form.get("sort"),
         "bookmarked": request.form.get("bookmarked"),
         "search": app_module._clean_search_value(request.form.get("search")),
+        "source_filter": app_module.normalize_source_filter(
+            request.form.get("source_filter")
+        ),
         "image_weight": str(
             app_module.normalize_image_weight(request.form.get("image_weight"))
         ),

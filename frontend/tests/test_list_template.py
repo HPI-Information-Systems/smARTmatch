@@ -115,7 +115,11 @@ class MatchListQueryTests(unittest.TestCase):
         self.assertIn("FROM match_score ms", page_sql)
         self.assertNotIn("UNION ALL", page_sql)
         self.assertIn("LIMIT :limit OFFSET :offset", page_sql)
-        self.assertLess(page_sql.index("LIMIT :limit OFFSET :offset"), page_sql.index("JOIN lost_artwork"))
+        self.assertLess(
+            page_sql.index("LIMIT :limit OFFSET :offset"),
+            page_sql.index("JOIN lost_artwork l"),
+        )
+        self.assertIn("source_lost.institution_classification", count_sql)
         self.assertEqual(count_sql.count("SELECT count(*)"), 1)
 
     def test_match_filter_params_are_cast_for_postgres_type_inference(self):
@@ -126,6 +130,11 @@ class MatchListQueryTests(unittest.TestCase):
         self.assertIn("CAST(:apply_filters AS boolean) = false", count_sql)
         self.assertIn("CAST(:rating AS text) IS NULL", count_sql)
         self.assertIn("CAST(:bookmarked AS text) IS NULL", count_sql)
+        self.assertIn("CAST(:source_filter AS text) = 'all'", count_sql)
+        self.assertIn(
+            "institution_classification = CAST(:source_filter AS text)", count_sql
+        )
+        self.assertNotIn("Museum A", count_sql)
         self.assertIn("ILIKE CAST(:search_like AS text)", search_sql)
         self.assertIn("og.match_id = CAST(:current_match_id AS text)", neighbors_sql)
 
@@ -172,6 +181,44 @@ class MatchListQueryTests(unittest.TestCase):
         self.assertIn("lead(fg.match_id) OVER", sql)
         self.assertIn("current_neighbors AS", sql)
 
+    def test_source_options_hide_for_zero_or_one_database_classification(self):
+        cases = [
+            [],
+            [SimpleNamespace(institution_classification=None)],
+            [SimpleNamespace(institution_classification="Museum A")],
+        ]
+        for rows in cases:
+            with self.subTest(rows=rows):
+                with patch.object(
+                    app.session, "execute", return_value=_FakeRowsResult(rows)
+                ):
+                    self.assertEqual(app.get_new_match_source_filter_options(), [])
+
+    def test_source_options_are_discovered_generically_from_the_database(self):
+        rows = [
+            SimpleNamespace(institution_classification=None),
+            SimpleNamespace(institution_classification="Museum A"),
+            SimpleNamespace(institution_classification="Museum B"),
+        ]
+        with patch.object(
+            app.session, "execute", return_value=_FakeRowsResult(rows)
+        ) as execute:
+            options = app.get_new_match_source_filter_options()
+
+        self.assertEqual(
+            options,
+            [
+                {"value": "Museum A", "label": "Museum A"},
+                {"value": "Museum B", "label": "Museum B"},
+            ],
+        )
+        sql = str(execute.call_args.args[0])
+        self.assertIn("FROM lost_artwork", sql)
+        self.assertIn("institution_classification", sql)
+        self.assertNotIn("match_score", sql)
+        self.assertNotIn("Museum A", sql)
+        self.assertNotIn("Museum B", sql)
+
     def test_best_auction_image_is_ordered_first_for_gallery(self):
         row = _page_row()
         row.best_image_file_id = 22
@@ -195,8 +242,9 @@ class MatchListTemplateTests(unittest.TestCase):
         app.app.config["TESTING"] = True
         self.client = app.app.test_client()
 
-    def render_list(self, path, matches=None):
+    def render_list(self, path, matches=None, source_options=None):
         matches = matches or []
+        source_options = source_options or []
         match_page = app.MatchPage(
             matches=matches,
             total_matches=len(matches),
@@ -208,7 +256,12 @@ class MatchListTemplateTests(unittest.TestCase):
             with patch.object(
                 app, "get_directory_counts", return_value=DIRECTORY_COUNTS
             ):
-                return self.client.get(path)
+                with patch.object(
+                    app,
+                    "get_new_match_source_filter_options",
+                    return_value=source_options,
+                ):
+                    return self.client.get(path)
 
     def render_detail(self, match):
         with patch.object(app, "get_match_by_id", return_value=match):
@@ -293,7 +346,10 @@ class MatchListTemplateTests(unittest.TestCase):
             with patch.object(
                 app, "get_directory_counts", return_value=DIRECTORY_COUNTS
             ):
-                response = self.client.get("/list")
+                with patch.object(
+                    app, "get_new_match_source_filter_options", return_value=[]
+                ):
+                    response = self.client.get("/list")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(get_page.call_args.kwargs["rating"], "unrated")
@@ -324,6 +380,93 @@ class MatchListTemplateTests(unittest.TestCase):
 
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(get_page.call_args.kwargs["sort"], "newest")
+
+    def test_source_filter_is_hidden_with_fewer_than_two_classifications(self):
+        response = self.render_list("/list")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn('id="source-filter"', response.get_data(as_text=True))
+
+    def test_institution_filter_preserves_dynamic_selection(self):
+        options = [{"value": "Museum A", "label": "Museum A"}]
+        response = self.render_list(
+            "/list?source_filter=Museum%20A",
+            matches=[self.example_match()],
+            source_options=options,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn('id="source-filter"', html)
+        self.assertIn(">Institution</label>", html)
+        self.assertIn('value="Museum A" selected', html)
+        self.assertIn('name="source_filter" value="Museum A"', html)
+        self.assertIn("source_filter=Museum+A", html)
+        self.assertIn(">Museum A</option>", html)
+        self.assertNotIn("— Museum A", html)
+
+    def test_source_filter_defaults_to_all_institutions(self):
+        match_page = app.MatchPage([], 0, 1, 20, 0)
+        options = [{"value": "Museum A", "label": "Museum A"}]
+        with patch.object(app, "get_matches_page", return_value=match_page) as get_page:
+            with patch.object(
+                app, "get_directory_counts", return_value=DIRECTORY_COUNTS
+            ):
+                with patch.object(
+                    app, "get_new_match_source_filter_options", return_value=options
+                ):
+                    response = self.client.get("/list")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(get_page.call_args.kwargs["source_filter"], "all")
+        html = response.get_data(as_text=True)
+        self.assertIn('value="all" selected', html)
+        self.assertIn("Alle Institutionen", html)
+        self.assertNotIn("Alle Klassifikationen", html)
+
+    def test_source_filter_is_applied_to_the_new_match_query(self):
+        match_page = app.MatchPage([], 0, 1, 20, 0)
+        options = [{"value": "Museum A", "label": "Museum A"}]
+        with patch.object(app, "get_matches_page", return_value=match_page) as get_page:
+            with patch.object(
+                app, "get_directory_counts", return_value=DIRECTORY_COUNTS
+            ):
+                with patch.object(
+                    app, "get_new_match_source_filter_options", return_value=options
+                ):
+                    response = self.client.get("/list?source_filter=Museum%20A")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(get_page.call_args.kwargs["source_filter"], "Museum A")
+
+    def test_unavailable_source_filter_falls_back_to_all(self):
+        match_page = app.MatchPage([], 0, 1, 20, 0)
+        options = [{"value": "Museum A", "label": "Museum A"}]
+        with patch.object(app, "get_matches_page", return_value=match_page) as get_page:
+            with patch.object(
+                app, "get_directory_counts", return_value=DIRECTORY_COUNTS
+            ):
+                with patch.object(
+                    app, "get_new_match_source_filter_options", return_value=options
+                ):
+                    response = self.client.get(
+                        "/list?source_filter=Unknown%20Museum"
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(get_page.call_args.kwargs["source_filter"], "all")
+        self.assertIn(
+            'value="all" selected', response.get_data(as_text=True)
+        )
+
+    def test_source_filter_is_hidden_outside_new_matches(self):
+        options = [{"value": "Museum A", "label": "Museum A"}]
+        response = self.render_list(
+            "/list?rating=accepted&bookmarked=all", source_options=options
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn('id="source-filter"', response.get_data(as_text=True))
 
     def test_category_sidebar_links_use_default_sorts(self):
         response = self.render_list("/list")

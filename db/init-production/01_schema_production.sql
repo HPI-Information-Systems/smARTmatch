@@ -112,6 +112,7 @@ CREATE TABLE IF NOT EXISTS lost_artwork (
     dict_technique_name    varchar(50)[] DEFAULT '{}'::varchar(50)[],
     provenance             text,
     institution_id         uuid REFERENCES institution(institution_id) ON DELETE SET NULL,
+    institution_classification text,
     circumstances_of_loss  text,
     lost_art_id            varchar(255),
     lost_art_url           varchar(255),

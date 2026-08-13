@@ -141,7 +141,7 @@
                     <div class="col-6 col-md-3 text-start">
                         <a role="button"
                            class="btn btn-outline-secondary"
-                           href="{{ url_for('match_list', rating=rating, sort=sort, bookmarked=bookmarked, search=search, image_weight=image_weight) }}">
+                           href="{{ url_for('match_list', rating=rating, sort=sort, bookmarked=bookmarked, search=search, source_filter=source_filter, image_weight=image_weight) }}">
                             <i class="bi bi-list-ul me-1" aria-hidden="true"></i>Zur Liste
                         </a>
                     </div>
@@ -412,7 +412,7 @@
                                role="button"
                                aria-label="Vorheriges Match"
                                title="Vorheriges Match"
-                               href="{{ url_for('match', match_id=previous_match.match_id, rating=rating, sort=sort, bookmarked=bookmarked, search=search, image_weight=image_weight) }}">
+                               href="{{ url_for('match', match_id=previous_match.match_id, rating=rating, sort=sort, bookmarked=bookmarked, search=search, source_filter=source_filter, image_weight=image_weight) }}">
                                 <i class="bi bi-arrow-left" aria-hidden="true"></i><span class="d-none d-md-inline ms-1">Vorheriges Match</span>
                             </a>
                         {% endif %}
@@ -425,6 +425,7 @@
                         {% if sort is not none %}<input type="hidden" name="sort" value="{{ sort }}" />{% endif %}
                         {% if bookmarked is not none %}<input type="hidden" name="bookmarked" value="{{ bookmarked }}" />{% endif %}
                         {% if search %}<input type="hidden" name="search" value="{{ search }}" />{% endif %}
+                        {% if source_filter %}<input type="hidden" name="source_filter" value="{{ source_filter }}" />{% endif %}
                         <input type="hidden" name="image_weight" value="{{ image_weight }}" />
                         <div class="d-flex flex-row flex-nowrap gap-3 justify-content-center" id="match-rating-buttons">
                             {% if match.rating == 0 or match.rating is none %}
@@ -453,7 +454,7 @@
                                role="button"
                                aria-label="Nächstes Match"
                                title="Nächstes Match"
-                               href="{{ url_for('match', match_id=next_match.match_id, rating=rating, sort=sort, bookmarked=bookmarked, search=search, image_weight=image_weight) }}">
+                               href="{{ url_for('match', match_id=next_match.match_id, rating=rating, sort=sort, bookmarked=bookmarked, search=search, source_filter=source_filter, image_weight=image_weight) }}">
                                 <span class="d-none d-md-inline me-1">Nächstes Match</span><i class="bi bi-arrow-right" aria-hidden="true"></i>
                             </a>
                         {% endif %}

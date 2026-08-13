@@ -11,6 +11,7 @@ WITH match_groups AS NOT MATERIALIZED (
         ms.lost_id::text || ':' || ms.auction_id::text AS match_id,
         ms.lost_id AS lost_artwork_id,
         ms.auction_id AS auction_artwork_id,
+        source_lost.institution_classification,
         CASE
             WHEN ms.image_final_score IS NULL AND ms.metadata_final_score IS NULL
                 THEN NULL::double precision
@@ -51,6 +52,8 @@ WITH match_groups AS NOT MATERIALIZED (
         ms.material_sim::double precision AS material_sim,
         ms.technique_sim::double precision AS technique_sim
     FROM match_score ms
+    JOIN lost_artwork source_lost
+      ON source_lost.lost_artwork_id = ms.lost_id
     LEFT JOIN matching_program metadata_mp
       ON metadata_mp.matching_program_id = ms.metadata_matching_program
 )
@@ -66,6 +69,13 @@ SELECT
     count(*) FILTER (WHERE COALESCE(rating, 0) > 0) AS accepted_count,
     count(*) FILTER (WHERE COALESCE(rating, 0) < 0) AS discarded_count
 FROM match_score
+"""
+
+LOST_ARTWORK_INSTITUTION_CLASSIFICATIONS_SQL = """
+SELECT institution_classification
+FROM lost_artwork
+GROUP BY institution_classification
+ORDER BY institution_classification NULLS FIRST
 """
 
 _MATCH_SEARCH_FILTER_CTE_SQL = """
@@ -132,6 +142,11 @@ AND (
     OR CAST(:bookmarked AS text) NOT IN ('true', 'false')
     OR (CAST(:bookmarked AS text) = 'true' AND bookmarked IS TRUE)
     OR (CAST(:bookmarked AS text) = 'false' AND bookmarked IS FALSE)
+)
+AND (
+    CAST(:source_filter AS text) IS NULL
+    OR CAST(:source_filter AS text) = 'all'
+    OR institution_classification = CAST(:source_filter AS text)
 )
 """
 

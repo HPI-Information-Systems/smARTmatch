@@ -11,6 +11,9 @@ def match(match_id):
     rating = request.args.get("rating")
     bookmarked = request.args.get("bookmarked")
     search = app_module._clean_search_value(request.args.get("search"))
+    source_filter = app_module.normalize_source_filter(
+        request.args.get("source_filter")
+    )
     image_weight = app_module.normalize_image_weight(request.args.get("image_weight"))
 
     match = app_module.get_match_by_id(match_id, image_weight=image_weight)
@@ -20,6 +23,7 @@ def match(match_id):
         sort=sort,
         bookmarked=bookmarked,
         search=search,
+        source_filter=source_filter,
         image_weight=image_weight,
     )
 
@@ -33,6 +37,7 @@ def match(match_id):
             sort=sort,
             bookmarked=bookmarked,
             search=search,
+            source_filter=source_filter,
             image_weight=image_weight,
         )
     abort(400)

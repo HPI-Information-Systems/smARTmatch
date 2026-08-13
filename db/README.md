@@ -23,7 +23,7 @@ docker compose exec -T db sh -lc \
   'PGPASSWORD="$POSTGRES_PASSWORD" psql -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT 1"'
 ```
 
-Files in `db/init-production/` initialize a **new** empty volume only. Changing `POSTGRES_*` later does not rename an existing database or rotate its role password.
+Top-level SQL files in `db/init-production/` initialize a **new** empty volume only; PostgreSQL does not recursively execute the `migrations/` directory. The main schema in `01_schema_production.sql` includes institution classification for fresh databases, and its indexes are defined in `02_indices.sql`. Changing `POSTGRES_*` later does not rename an existing database or rotate its role password.
 
 ## Backup and restore
 
@@ -67,24 +67,22 @@ Without an argument the helper applies its current default migration. It reads `
 
 The current migration, `15_add_scraper_queue_progress.sql`, adds process-shared queue counters used by the scraper dashboard. Apply it before deploying workers that use the updated `ScraperRun` model.
 
-## Lost-artwork source classification
+## Lost-artwork institution classification
 
-`lost_artwork_source_classification` assigns an auditable source category without relying on `institution_id`. The imported data contains unrelated LostArt records linked to the SPSG institution, so the view instead uses embedded SPSG provenance and SPSG identity in restricted LostArt reporter/contact fields.
+`lost_artwork.institution_classification` is a generic, optional indexed institution label; `NULL` means uncategorized. Shared schema and migrations do not contain institution-specific classification rules. Import-specific scripts may populate the column and maintain it on writes. The frontend discovers distinct labels dynamically and only compares stored values.
 
 ```sql
-SELECT source_category, count(*)
-FROM lost_artwork_source_classification
-GROUP BY source_category
-ORDER BY source_category;
+SELECT institution_classification, count(*)
+FROM lost_artwork
+GROUP BY institution_classification
+ORDER BY institution_classification NULLS FIRST;
 
-SELECT la.*, classification.source_category,
-       classification.classification_evidence
-FROM lost_artwork la
-JOIN lost_artwork_source_classification classification
-  USING (lost_artwork_id);
+SELECT lost_artwork_id, institution_classification
+FROM lost_artwork
+WHERE institution_classification IS NOT NULL;
 ```
 
-For the dump in `local/09_import_lostart_data.sql`, the expected counts are 7,504 `SPSG (internal)`, 887 `SPSG (internal and lostart)`, 2,575 `SPSG (lostart)`, and 44,627 `non-SPSG`. New databases create the view during initialization. Apply `db/init-production/migrations/14_add_lost_artwork_source_classification_view.sql` to an existing database with the migration helper described above.
+Fresh databases receive the generic column from `01_schema_production.sql`; apply `db/init-production/migrations/14_add_lost_artwork_institution_classification.sql` only to an existing database. `local/10_classify_spsg_lost_artworks.sql` contains the SPSG-specific backfill and write trigger and can be manually appended to `local/09_import_lostart_data.sql`. It is intentionally kept separate. For local UI testing, run `local/11_insert_example_institution_matches.sql` afterward.
 
 ## Monitoring and maintenance
 

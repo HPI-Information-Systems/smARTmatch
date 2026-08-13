@@ -11,6 +11,9 @@ CREATE INDEX IF NOT EXISTS idx_auction_artwork_image_file_unprocessed
 CREATE INDEX IF NOT EXISTS idx_lost_artwork_image_file_image_file_id
     ON lost_artwork_image_file (image_file_id);
 
+CREATE INDEX IF NOT EXISTS idx_lost_artwork_institution_classification
+    ON lost_artwork (institution_classification);
+
 CREATE INDEX IF NOT EXISTS idx_auction_artwork_metadata_unprocessed
     ON auction_artwork (auction_artwork_id)
     WHERE is_metadata_matching_processed = false;
@@ -76,6 +79,11 @@ CREATE INDEX IF NOT EXISTS idx_match_score_auction_id
 
 CREATE INDEX IF NOT EXISTS idx_match_score_best_image_file_id
     ON match_score (best_image_file_id);
+
+CREATE INDEX IF NOT EXISTS idx_match_score_new_lost_id
+    ON match_score (lost_id)
+    WHERE COALESCE(rating, 0) = 0
+      AND COALESCE(bookmarked, false) IS FALSE;
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_auction_artwork_artist_id
     ON auction_artwork (artist_id);

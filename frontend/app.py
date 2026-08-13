@@ -66,6 +66,8 @@ session = Session()
 
 DEFAULT_IMAGE_WEIGHT = 50
 
+SOURCE_FILTER_ALL = "all"
+
 
 @dataclass
 class CombinedMatchView:
@@ -219,6 +221,11 @@ def metadata_weight(image_weight):
     return 100 - normalize_image_weight(image_weight)
 
 
+def normalize_source_filter(value):
+    normalized = str(value or SOURCE_FILTER_ALL).strip()
+    return normalized[:255] or SOURCE_FILTER_ALL
+
+
 app.jinja_env.globals.update(
     score_percent=score_percent,
     score_percent_short=score_percent_short,
@@ -234,6 +241,7 @@ def _match_query_params(
     rating="all",
     bookmarked="all",
     search=None,
+    source_filter=SOURCE_FILTER_ALL,
     image_weight=DEFAULT_IMAGE_WEIGHT,
     page=1,
     per_page=20,
@@ -246,6 +254,7 @@ def _match_query_params(
         "bookmarked": bookmarked,
         "search_like": f"%{clean_search}%",
         "apply_filters": not bool(clean_search),
+        "source_filter": normalize_source_filter(source_filter),
         "image_weight": normalize_image_weight(image_weight),
         "limit": page_size,
         "offset": (page_number - 1) * page_size,
@@ -448,6 +457,7 @@ def get_matches_page(
     sort="similarity",
     bookmarked="all",
     search=None,
+    source_filter=SOURCE_FILTER_ALL,
     image_weight=DEFAULT_IMAGE_WEIGHT,
     page=1,
     per_page=20,
@@ -460,6 +470,7 @@ def get_matches_page(
         rating=rating,
         bookmarked=bookmarked,
         search=clean_search,
+        source_filter=source_filter,
         image_weight=image_weight,
         page=page_number,
         per_page=page_size,
@@ -484,6 +495,7 @@ def get_match_count(
     rating="all",
     bookmarked="all",
     search=None,
+    source_filter=SOURCE_FILTER_ALL,
     image_weight=DEFAULT_IMAGE_WEIGHT,
 ):
     clean_search = _clean_search_value(search)
@@ -491,6 +503,7 @@ def get_match_count(
         rating=rating,
         bookmarked=bookmarked,
         search=clean_search,
+        source_filter=source_filter,
         image_weight=image_weight,
     )
     return int(
@@ -498,6 +511,23 @@ def get_match_count(
             text(match_sql.match_count_sql(bool(clean_search))), params
         ).scalar_one()
     )
+
+
+def get_new_match_source_filter_options():
+    rows = session.execute(
+        text(match_sql.LOST_ARTWORK_INSTITUTION_CLASSIFICATIONS_SQL)
+    ).all()
+    if len(rows) <= 1:
+        return []
+
+    return [
+        {
+            "value": row.institution_classification,
+            "label": row.institution_classification,
+        }
+        for row in rows
+        if row.institution_classification is not None
+    ]
 
 
 def get_top_unlabeled_auction_previews(limit=21):
@@ -638,6 +668,7 @@ def get_previous_and_next_match(
     sort="similarity",
     bookmarked="all",
     search=None,
+    source_filter=SOURCE_FILTER_ALL,
     image_weight=DEFAULT_IMAGE_WEIGHT,
 ):
     current_match_id = _match_identifier(match_id)
@@ -649,6 +680,7 @@ def get_previous_and_next_match(
         rating=rating,
         bookmarked=bookmarked,
         search=clean_search,
+        source_filter=source_filter,
         image_weight=image_weight,
     )
     params["current_match_id"] = current_match_id
@@ -672,6 +704,7 @@ def get_next_match_to_label(
     sort="similarity",
     bookmarked="all",
     search=None,
+    source_filter=SOURCE_FILTER_ALL,
     image_weight=DEFAULT_IMAGE_WEIGHT,
 ):
     previous_match, next_match = get_previous_and_next_match(
@@ -680,6 +713,7 @@ def get_next_match_to_label(
         sort=sort,
         bookmarked=bookmarked,
         search=search,
+        source_filter=source_filter,
         image_weight=image_weight,
     )
     if next_match is not None:
@@ -690,6 +724,7 @@ def get_next_match_to_label(
         sort=sort,
         bookmarked=bookmarked,
         search=search,
+        source_filter=source_filter,
         image_weight=image_weight,
         page=1,
         per_page=2,

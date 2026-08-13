@@ -27,23 +27,27 @@ Files in `db/init-production/` initialize a **new** empty volume only. Changing 
 
 ## Backup and restore
 
-Back up the database and `db/images/` as one consistent set. Stop all writers for the snapshot, then restore service only after both copies succeed:
+Back up the database and `db/images/` as one consistent set:
 
 ```bash
-mkdir -p local/db-backups
 timestamp="$(date +%Y%m%d_%H%M%S)"
-docker compose stop scrapers matching_pipeline frontend
-if docker compose exec -T db sh -lc \
-     'PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' \
-     > "local/db-backups/smartmatch_${timestamp}.dump" \
-  && tar -C db -czf "local/db-backups/images_${timestamp}.tgz" images; then
-  docker compose up -d scrapers matching_pipeline frontend
-else
-  echo "backup failed; writers remain stopped" >&2
-fi
+./scripts/backup.sh "local/db-backups/smartmatch_${timestamp}"
 ```
 
-Test restores in a separate database/host. For a planned restore, stop all writers first, then use `pg_restore` with reviewed ownership and cleanup options appropriate to the target. Never overwrite the only production copy without a tested backup.
+The script pauses `scrapers` only when that service is running and restores its previous state when it exits. PostgreSQL, `frontend`, and `matching_pipeline` remain online. Do not run manual image imports, migrations, or restores concurrently. Each backup contains `db_dump.dump` (PostgreSQL custom format) and `db/images/`; the progress output reports the image count, image size, dump size, and total backup size.
+
+Test restores from a separate checkout and Compose project (or on a separate host), because the restore script always targets the current checkout's Compose `db` service and `db/images/`. A restore forcefully disconnects clients, drops and recreates the configured `POSTGRES_DB`, restores the dump, and replaces the entire live image directory. All previous database objects, rows, and image files are removed. Dump ownership and privileges are not applied; restored objects use the configured `POSTGRES_USER`. PostgreSQL roles and other cluster-wide settings are not part of this backup. Never overwrite the only production copy without a tested backup.
+
+A failure after the database is dropped can leave it absent or empty; a later image-installation failure can leave the restored database with the previous images. Keep application services stopped, fix the cause, and rerun the same restore. If cleanup reports a remaining `.images-previous.*` directory, inspect and remove that directory manually.
+
+```bash
+if docker compose stop scrapers matching_pipeline frontend &&
+   ./scripts/restore.sh "local/db-backups/smartmatch_YYYYMMDD_HHMMSS"; then
+  docker compose up -d scrapers matching_pipeline frontend
+else
+  echo "restore aborted; verify Compose service state before retrying" >&2
+fi
+```
 
 ## Migrations
 

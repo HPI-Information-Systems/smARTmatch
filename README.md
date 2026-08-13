@@ -134,6 +134,23 @@ docker compose run --rm --no-deps scrapers \
 
 Back up PostgreSQL and `db/images/` before migrations or destructive maintenance. `docker compose down` preserves the database volume; `docker compose down -v` deletes it.
 
+### Backup and restore
+
+The backup script temporarily stops and restarts `scrapers` when it is running. PostgreSQL, the frontend, and the matching pipeline remain online:
+
+```bash
+./scripts/backup.sh "backups/smartmatch_$(date +%Y%m%d_%H%M%S)"
+```
+
+Do not run manual image imports, migrations, or restores during a backup. A restore requires all application services to be stopped:
+
+```bash
+docker compose stop scrapers matching_pipeline frontend &&
+  ./scripts/restore.sh backups/smartmatch_YYYYMMDD_HHMMSS
+```
+
+Restart application services only after the restore succeeds. Restore drops and recreates the configured database and completely replaces `db/images/`. Backups contain `db_dump.dump` and `db/images/`; see [`db/README.md`](db/README.md) for operational details.
+
 Existing volumes are not automatically migrated. See [`db/README.md`](db/README.md) and use `scripts/apply_production_migration.sh` for reviewed production migrations. The helper uses `ENV_FILE` (not `SMARTMATCH_ENV_FILE`), so point both names at the same runtime file.
 
 ## Local development and tests

@@ -6,6 +6,8 @@ from requests import Response
 
 from shared.logging_adapter import get_logger
 
+from .user_agents import VERIFIED_USER_AGENTS, choose_user_agent
+
 logger = get_logger(__name__)
 
 
@@ -14,25 +16,13 @@ def _default_log(message: str) -> None:
     log("%s", message)
 
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.10 Safari/605.1.1",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.3",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.3",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.3",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36 Trailer/93.3.8652.5",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36 Edg/134.0.0.",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 OPR/117.0.0.",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 Edg/132.0.0.",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.102 Safari/537.36 Edge/18.1958",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.3",
-]
+# Backwards-compatible public alias used by older call sites.
+USER_AGENTS = VERIFIED_USER_AGENTS
 
 
 def generate_headers() -> dict[str, str]:
     headers = {
-        "User-Agent": random.choice(USER_AGENTS),
+        "User-Agent": choose_user_agent(USER_AGENTS),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
     }
@@ -40,8 +30,16 @@ def generate_headers() -> dict[str, str]:
 
 
 def handle_request(
-    url, max_retries=5, min_wait=0.25, max_wait=0.25, *, log=_default_log
-) -> Response:
+    url,
+    max_retries=5,
+    min_wait=0.25,
+    max_wait=0.25,
+    *,
+    log=_default_log,
+    session: requests.Session | None = None,
+    headers: dict[str, str] | None = None,
+    expected_status: int | None = None,
+) -> Response | None:
     """Retry-wrapped HTTP GET.
 
     ``log`` is a callable that prints one line.  Pass the owning scraper's
@@ -55,19 +53,48 @@ def handle_request(
             random.uniform(min_wait, max_wait)
         )  # circumvent rate limit / upper bound for network requests
         try:
-            r = requests.get(url, headers=generate_headers(), timeout=30)
+            requester = session or requests
+            request_headers = headers if headers is not None else generate_headers()
+            r = requester.get(url, headers=request_headers, timeout=30)
             r.raise_for_status()
+            if expected_status is not None and r.status_code != expected_status:
+                raise requests.HTTPError(
+                    f"Expected HTTP {expected_status}, received HTTP {r.status_code}",
+                    response=r,
+                )
             return r
         except requests.RequestException as error:
             attempts += 1
             log(f"[fail] {url}: {error}")
             log(f"[retry] attempt {attempts}/{max_retries}")
 
+    return None
+
 
 def request_html(
-    url, max_retries=5, min_wait=0.25, max_wait=0.25, *, log=_default_log
+    url,
+    max_retries=5,
+    min_wait=0.25,
+    max_wait=0.25,
+    *,
+    log=_default_log,
+    session: requests.Session | None = None,
+    headers: dict[str, str] | None = None,
+    expected_status: int | None = None,
 ):
-    r = handle_request(url, max_retries, min_wait, max_wait, log=log)
+    r = handle_request(
+        url,
+        max_retries,
+        min_wait,
+        max_wait,
+        log=log,
+        session=session,
+        headers=headers,
+        expected_status=expected_status,
+    )
+    if r is None:
+        return None
+
     try:
         encoding = (r.encoding or "").lower()
         if not encoding or encoding == "iso-8859-1":
@@ -84,6 +111,9 @@ def request_image(
     url, max_retries=5, min_wait=0.25, max_wait=0.25, *, log=_default_log
 ):
     r = handle_request(url, max_retries, min_wait, max_wait, log=log)
+    if r is None:
+        return None
+
     try:
         return r.content
     except Exception:

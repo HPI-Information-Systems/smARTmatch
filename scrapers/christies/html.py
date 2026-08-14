@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import random
 import re
 import time
 from typing import Any, Optional
 
 import requests
 
+from ..utils.user_agents import VERIFIED_USER_AGENTS, choose_user_agent
 from .html_components import extract_chr_components, extract_lot_header_data
 from .html_details import extract_html_details
 
@@ -31,24 +31,13 @@ class ChristiesHTMLScraper:
         self._log = log
         self.base_delay = base_delay
         self.rotate_after_requests = rotate_after_requests
-        self.user_agents = user_agents or [
-            (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-        ]
+        self.user_agents = user_agents or list(VERIFIED_USER_AGENTS)
         self.session = requests.Session()
         self.request_count = 0
 
     def _get_headers(self) -> dict[str, str]:
         headers = {
-            "User-Agent": random.choice(self.user_agents),
+            "User-Agent": choose_user_agent(self.user_agents),
             "Accept": (
                 "text/html,application/xhtml+xml,application/xml;"
                 "q=0.9,image/webp,*/*;q=0.8"
@@ -84,7 +73,9 @@ class ChristiesHTMLScraper:
     def _extract_lot_header_data(self, html: str) -> Optional[dict[str, Any]]:
         return extract_lot_header_data(html)
 
-    def fetch_lot_html(self, lot_id: str, *, verbose: bool = False) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    def fetch_lot_html(
+        self, lot_id: str, *, verbose: bool = False
+    ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
         url = self._lot_url_for_id(lot_id)
         html, reason = self._fetch_html(url)
         if not html:
@@ -105,7 +96,6 @@ class ChristiesHTMLScraper:
             if verbose:
                 self._log(f"[fail] {lot_id}: {reason}")
             return None, reason
-
 
         return data, None
 

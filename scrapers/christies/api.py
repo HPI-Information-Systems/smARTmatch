@@ -1,29 +1,15 @@
 from __future__ import annotations
 
-import random
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
 import requests
 
+from ..utils.user_agents import VERIFIED_USER_AGENTS, choose_user_agent
 
-DEFAULT_USER_AGENTS = [
-    (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) "
-        "Gecko/20100101 Firefox/121.0"
-    ),
-]
+
+DEFAULT_USER_AGENTS = VERIFIED_USER_AGENTS
 
 
 @dataclass(frozen=True)
@@ -51,7 +37,7 @@ class ChristiesAPIConfig:
     )
     rotate_after_requests: int = 200
     base_delay: float = 0.05
-    user_agents: tuple[str, ...] = tuple(DEFAULT_USER_AGENTS)
+    user_agents: tuple[str, ...] = DEFAULT_USER_AGENTS
 
 
 class ChristiesAPI:
@@ -63,7 +49,7 @@ class ChristiesAPI:
     def _get_headers(self) -> dict[str, str]:
         return {
             "Accept": "application/vnd.christies.v1+json",
-            "User-Agent": random.choice(self.config.user_agents),
+            "User-Agent": choose_user_agent(self.config.user_agents),
             "Referer": "https://www.christies.com/en/search",
             "Origin": "https://www.christies.com",
         }
@@ -76,7 +62,9 @@ class ChristiesAPI:
             self.session.close()
             self.session = requests.Session()
 
-    def get_search_client_results(self, *, from_offset: int = 0) -> Optional[dict[str, Any]]:
+    def get_search_client_results(
+        self, *, from_offset: int = 0
+    ) -> Optional[dict[str, Any]]:
         url = f"{self.config.base_url}/search-client"
         params = {
             "sortby": "relevance",
@@ -95,7 +83,9 @@ class ChristiesAPI:
         self._apply_delay()
 
         try:
-            response = self.session.get(url, params=params, headers=self._get_headers(), timeout=30)
+            response = self.session.get(
+                url, params=params, headers=self._get_headers(), timeout=30
+            )
             if response.status_code != 200:
                 return None
             data = response.json()

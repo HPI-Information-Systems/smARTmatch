@@ -10,11 +10,9 @@ from playwright.sync_api import Browser, BrowserContext, Playwright, sync_playwr
 
 from shared.logging_adapter import get_logger
 
-_USER_AGENTS = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-)
+from .user_agents import VERIFIED_USER_AGENTS, choose_user_agent
+
+_USER_AGENTS = VERIFIED_USER_AGENTS
 
 logger = get_logger(__name__)
 
@@ -33,7 +31,9 @@ _EXTRA_HEADERS = {
 # with WAF challenge fingerprinting and cause verification failures.
 _STEALTH_SCRIPT = """
 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-document.documentElement.removeAttribute('webdriver');
+if (document.documentElement) {
+    document.documentElement.removeAttribute('webdriver');
+}
 if (!window.chrome) {
     window.chrome = { runtime: {}, loadTimes: function(){}, csi: function(){}, app: {} };
 }
@@ -87,8 +87,9 @@ class PlaywrightFetchMixin:
             args=["--disable-blink-features=AutomationControlled"],
             ignore_default_args=["--enable-automation"],
         )
+        browser_user_agents = getattr(self, "_browser_user_agents", _USER_AGENTS)
         self._context = self._browser.new_context(
-            user_agent=random.choice(_USER_AGENTS),
+            user_agent=choose_user_agent(browser_user_agents or _USER_AGENTS),
             locale="de-AT",
             viewport={"width": 1280, "height": 800},
             extra_http_headers=_EXTRA_HEADERS,
@@ -169,7 +170,9 @@ class PlaywrightFetchMixin:
                 if "AwsWafIntegration" in content:
                     content = self._wait_waf_resolved(page)
                     if content is None:
-                        self._log(f"[playwright] WAF challenge unresolved (attempt {attempt}/{max_retries})")
+                        self._log(
+                            f"[playwright] WAF challenge unresolved (attempt {attempt}/{max_retries})"
+                        )
                         if attempt < max_retries:
                             self._log(f"[retry] attempt {attempt}/{max_retries}")
                         continue

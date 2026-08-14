@@ -558,6 +558,80 @@
     root.querySelectorAll("[data-keypoint-viewer]").forEach(setupKeypointViewer);
   }
 
+  function normalizedSearchValue(value) {
+    return String(value || "").trim().replace(/\s+/g, " ");
+  }
+
+  function setSearchResultsPageMode() {
+    document.body.classList.remove("is-home-page", "is-match-page");
+    document.body.classList.add("is-sub-page");
+  }
+
+  function showSearchResultsLoading(form) {
+    const input = form.querySelector('input[name="search"]');
+    const target = document.querySelector("#frontend-main-content");
+    const template = document.querySelector("#search-results-loading-template");
+    if (!input || !target || !template) return;
+
+    const search = normalizedSearchValue(input.value);
+    let state = target.querySelector("[data-search-results-loading]");
+    if (!state) {
+      target.replaceChildren(template.content.cloneNode(true));
+      state = target.querySelector("[data-search-results-loading]");
+    }
+    if (!state) return;
+
+    const heading = state.querySelector("[data-search-loading-heading]");
+    const message = state.querySelector("[data-search-loading-message]");
+    const spinner = state.querySelector("[data-search-loading-spinner]");
+    if (heading) {
+      heading.textContent = search ? `Suchergebnisse für „${search}“` : "Matches";
+    }
+    if (message) {
+      message.textContent = search
+        ? "Suchergebnisse werden geladen …"
+        : "Matches werden geladen …";
+      message.closest("[role]")?.setAttribute("role", "status");
+    }
+    spinner?.classList.remove("d-none");
+    target.setAttribute("aria-busy", "true");
+    setSearchResultsPageMode();
+  }
+
+  function showSearchResultsError() {
+    const target = document.querySelector("#frontend-main-content");
+    const state = target && target.querySelector("[data-search-results-loading]");
+    if (!state) return;
+
+    state.querySelector("[data-search-loading-spinner]")?.classList.add("d-none");
+    const message = state.querySelector("[data-search-loading-message]");
+    if (message) {
+      message.textContent = "Die Suchergebnisse konnten nicht geladen werden. Bitte erneut versuchen.";
+      message.closest("[role]")?.setAttribute("role", "alert");
+    }
+    target.setAttribute("aria-busy", "false");
+  }
+
+  function setupSearchResultsLoading(form) {
+    if (!form || form.dataset.searchLoadingBound === "1") return;
+    const input = form.querySelector('input[name="search"]');
+    if (!input) return;
+
+    form.dataset.searchLoadingBound = "1";
+    input.addEventListener("input", (event) => {
+      if (!event.isComposing) showSearchResultsLoading(form);
+    });
+    input.addEventListener("compositionend", () => showSearchResultsLoading(form));
+    form.addEventListener("submit", () => showSearchResultsLoading(form));
+  }
+
+  function initSearchResultsLoading(root = document) {
+    if (root.matches && root.matches("[data-search-results-form]")) {
+      setupSearchResultsLoading(root);
+    }
+    root.querySelectorAll("[data-search-results-form]").forEach(setupSearchResultsLoading);
+  }
+
   function initFrontend(root = document) {
     initZoomWrappers(root);
     initSimilaritySliders(root);
@@ -566,6 +640,7 @@
     initCenteredScroll(root);
     initStatsTimeLabels(root);
     initKeypointViewers(root);
+    initSearchResultsLoading(root);
   }
 
   document.addEventListener("DOMContentLoaded", () => {
@@ -575,5 +650,18 @@
 
   document.body.addEventListener("htmx:afterSwap", (event) => {
     initFrontend(event.target || document);
+  });
+
+  document.body.addEventListener("htmx:afterRequest", (event) => {
+    const form = document.querySelector("[data-search-results-form]");
+    const requestElement = event.detail && event.detail.elt;
+    if (
+      form &&
+      event.detail &&
+      event.detail.successful === false &&
+      (requestElement === form || (requestElement && form.contains(requestElement)))
+    ) {
+      showSearchResultsError();
+    }
   });
 })();

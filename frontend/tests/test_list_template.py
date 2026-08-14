@@ -388,6 +388,19 @@ class MatchListTemplateTests(unittest.TestCase):
         self.assertIn("Alle Matches", html)
         self.assertIn("Suchergebnisse", html)
 
+    def test_header_search_has_immediate_loading_results_shell(self):
+        response = self.render_list("/list")
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn("data-search-results-form", html)
+        self.assertIn('id="search-results-loading-template"', html)
+        self.assertIn("data-search-results-loading", html)
+        self.assertIn('hx-history="false"', html)
+        self.assertIn("data-search-loading-heading", html)
+        self.assertIn("Suchergebnisse werden geladen …", html)
+        self.assertIn('role="status"', html)
+
     def test_default_list_route_sorts_unrated_by_similarity(self):
         match_page = app.MatchPage(
             matches=[],

@@ -54,6 +54,7 @@
                         <form class="header-search-form w-100"
                               role="search"
                               action="{{ url_for('match_list') }}"
+                              data-search-results-form
                               hx-get="{{ url_for('match_list') }}"
                               hx-trigger="input changed delay:250ms from:#search, submit"
                               hx-target="#frontend-main-content"
@@ -113,6 +114,26 @@
                 {% endblock content %}
             </div>
         </main>
+        <template id="search-results-loading-template">
+            <div class="row m-0 match-list-layout search-results-loading-layout"
+                 data-search-results-loading
+                 hx-history="false">
+                <div class="col match-list-content">
+                    <div class="px-2 pt-3 pb-2 bg-white match-list-heading">
+                        <h1 class="h5 mb-1" data-search-loading-heading>Suchergebnisse</h1>
+                        <p class="text-muted small mb-0">Die Suche wird über allen Matches ausgeführt.</p>
+                    </div>
+                    <div class="search-results-loading-state d-flex align-items-center justify-content-center gap-2"
+                         role="status"
+                         aria-live="polite">
+                        <span class="spinner-border spinner-border-sm"
+                              aria-hidden="true"
+                              data-search-loading-spinner></span>
+                        <span data-search-loading-message>Suchergebnisse werden geladen …</span>
+                    </div>
+                </div>
+            </div>
+        </template>
         <footer class="frontend-footer py-3 bg-light">
             <div class="frontend-content-container">
                 <div class="d-flex justify-content-center align-items-center gap-4">

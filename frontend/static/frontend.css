@@ -506,6 +506,15 @@ button,
   min-width: 0;
 }
 
+.search-results-loading-state {
+  min-height: 18rem;
+  color: #6c757d;
+}
+
+.search-results-loading-state .spinner-border {
+  color: var(--smartmatch-accent);
+}
+
 @media (min-width: 992px) {
   .match-list-layout {
     flex-wrap: nowrap;

@@ -4,6 +4,29 @@ import unittest
 from urllib.parse import parse_qsl, urlsplit
 
 from scrapers.sothebys.client import SothebysClient
+from scrapers.sothebys.listing import iter_auction_urls
+
+
+class _CalendarClient:
+    def __init__(self, pages: dict[int, list[str]]) -> None:
+        self.pages = pages
+        self.requested_pages: list[int] = []
+        self.messages: list[str] = []
+
+    def calendar_page_url(self, _base: str, page_number: int) -> str:
+        self.requested_pages.append(page_number)
+        return str(page_number)
+
+    @staticmethod
+    def fetch_calendar_html(url: str) -> str:
+        return url
+
+    def extract_buy_links(self, html: str, *, base_url: str) -> list[str]:
+        del base_url
+        return self.pages.get(int(html), [])
+
+    def _log(self, message: str) -> None:
+        self.messages.append(message)
 
 
 class SothebysClientTests(unittest.TestCase):
@@ -18,7 +41,9 @@ class SothebysClientTests(unittest.TestCase):
         pairs = parse_qsl(urlsplit(page_url).query, keep_blank_values=True)
         self.assertEqual([value for key, value in pairs if key == "f4"], ["a", "b"])
         self.assertEqual([value for key, value in pairs if key == "p"], ["2"])
-        self.assertEqual([value for key, value in pairs if key == "_requestType"], ["ajax"])
+        self.assertEqual(
+            [value for key, value in pairs if key == "_requestType"], ["ajax"]
+        )
 
     def test_extract_buy_links_deduplicates_and_expands(self) -> None:
         html = """
@@ -28,7 +53,9 @@ class SothebysClientTests(unittest.TestCase):
         <a href="/en/sell">Not buy</a>
         """
 
-        links = self.client.extract_buy_links(html, base_url="https://www.sothebys.com/en/calendar")
+        links = self.client.extract_buy_links(
+            html, base_url="https://www.sothebys.com/en/calendar"
+        )
 
         self.assertEqual(
             links,
@@ -128,8 +155,44 @@ class SothebysClientTests(unittest.TestCase):
                 return _Response()
 
         self.client.session = _Session()
-        html = self.client.fetch_calendar_html("https://www.sothebys.com/en/calendar?p=1")
+        html = self.client.fetch_calendar_html(
+            "https://www.sothebys.com/en/calendar?p=1"
+        )
         self.assertEqual(html, "<div>calendar</div>")
+
+
+class SothebysCalendarListingTests(unittest.TestCase):
+    def test_checks_next_page_and_stops_when_all_results_were_seen(self) -> None:
+        first = "https://www.sothebys.com/en/buy/auction/2026/first"
+        second = "https://www.sothebys.com/en/buy/auction/2026/second"
+        shared = "https://www.sothebys.com/en/buy/auction/2026/shared"
+        client = _CalendarClient({1: [first, shared], 2: [second], 3: [shared, second]})
+
+        urls = list(
+            iter_auction_urls(
+                client=client,
+                base_calendar_url="https://www.sothebys.com/en/calendar",
+                max_calendar_pages=None,
+            )
+        )
+
+        self.assertEqual(urls, [first, shared, second])
+        self.assertEqual(client.requested_pages, [1, 2, 3])
+
+    def test_checks_next_page_and_stops_when_it_is_missing(self) -> None:
+        first = "https://www.sothebys.com/en/buy/auction/2026/first"
+        client = _CalendarClient({1: [first], 2: []})
+
+        urls = list(
+            iter_auction_urls(
+                client=client,
+                base_calendar_url="https://www.sothebys.com/en/calendar",
+                max_calendar_pages=None,
+            )
+        )
+
+        self.assertEqual(urls, [first])
+        self.assertEqual(client.requested_pages, [1, 2])
 
 
 if __name__ == "__main__":

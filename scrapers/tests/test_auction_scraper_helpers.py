@@ -15,7 +15,9 @@ class DrouotHelperTests(unittest.TestCase):
     def setUp(self) -> None:
         self.scraper = DrouotScraper(download_images=False)
 
-    def test_derive_artist_and_title_keeps_clean_heading_without_inference(self) -> None:
+    def test_derive_artist_and_title_keeps_clean_heading_without_inference(
+        self,
+    ) -> None:
         description = (
             "Louis-Michel VAN LOO, d'après\n"
             "Portrait présumé de l'architecte Soufflot à sa table de travail\n"
@@ -32,9 +34,15 @@ class DrouotHelperTests(unittest.TestCase):
         self.assertIsNone(artist)
 
     def test_placeholder_title_is_marked_as_unknown(self) -> None:
-        self.assertTrue(self.scraper._parser._is_placeholder_title("NICHT IDENTIFIZIERTE SIGNATUR"))
-        self.assertTrue(self.scraper._parser._is_placeholder_title("Signature non identifiée"))
-        self.assertFalse(self.scraper._parser._is_placeholder_title("Portrait d'une femme"))
+        self.assertTrue(
+            self.scraper._parser._is_placeholder_title("NICHT IDENTIFIZIERTE SIGNATUR")
+        )
+        self.assertTrue(
+            self.scraper._parser._is_placeholder_title("Signature non identifiée")
+        )
+        self.assertFalse(
+            self.scraper._parser._is_placeholder_title("Portrait d'une femme")
+        )
 
     def test_resolve_title_and_artist_uses_only_explicit_artist_fields(self) -> None:
         title, artist = self.scraper._parser._resolve_title_and_artist(
@@ -85,7 +93,9 @@ class DrouotHelperTests(unittest.TestCase):
         self.assertTrue(normalized.startswith("Walter Sickert"))
         self.assertLessEqual(len(normalized), 220)
 
-    def test_extract_description_from_dom_prefers_lot_text_over_boilerplate(self) -> None:
+    def test_extract_description_from_dom_prefers_lot_text_over_boilerplate(
+        self,
+    ) -> None:
         soup = BeautifulSoup(
             """
             <html>
@@ -108,7 +118,9 @@ class DrouotHelperTests(unittest.TestCase):
         page_two = '<a href="/de/l/113-lot-c"></a>'
         page_three = "<html><body>No lots</body></html>"
 
-        with patch.object(self.scraper, "fetch_html", side_effect=[page_one, page_two, page_three]) as fetch_html:
+        with patch.object(
+            self.scraper, "fetch_html", side_effect=[page_one, page_two, page_three]
+        ) as fetch_html:
             urls = list(self.scraper.get_urls())
 
         self.assertEqual(
@@ -126,7 +138,9 @@ class DrouotHelperTests(unittest.TestCase):
         page_one = '<a href="/de/l/111-lot-a"></a><a href="/de/l/112-lot-b"></a>'
         page_two = '<a href="/de/l/113-lot-c"></a>'
 
-        with patch.object(scraper, "fetch_html", side_effect=[page_one, page_two]) as fetch_html:
+        with patch.object(
+            scraper, "fetch_html", side_effect=[page_one, page_two]
+        ) as fetch_html:
             urls = list(scraper.get_urls())
 
         self.assertEqual(
@@ -152,7 +166,9 @@ class LottissimoHelperTests(unittest.TestCase):
         self.assertEqual(title, "Mutter mit Jungen - Käthe Kollwitz")
         self.assertIsNone(artist)
 
-    def test_split_title_and_artist_defaults_to_null_for_comma_delimited_title(self) -> None:
+    def test_split_title_and_artist_defaults_to_null_for_comma_delimited_title(
+        self,
+    ) -> None:
         title, artist = self.parser._split_title_and_artist(
             "Beutner, Johannes. Drei Grazien"
         )
@@ -184,7 +200,9 @@ class LottissimoHelperTests(unittest.TestCase):
         self.assertEqual(page.title, "Münchener Oktoberfest 1875")
         self.assertIsNone(page.artist_name)
 
-    def test_parse_lot_page_defaults_title_to_null_for_comma_delimited_heading(self) -> None:
+    def test_parse_lot_page_defaults_title_to_null_for_comma_delimited_heading(
+        self,
+    ) -> None:
         html = """
         <html>
           <body>
@@ -205,7 +223,9 @@ class LottissimoHelperTests(unittest.TestCase):
         assert page is not None
         self.assertIsNone(page.title)
 
-    def test_parse_lot_page_prefers_description_tab_segment_over_menu_label(self) -> None:
+    def test_parse_lot_page_prefers_description_tab_segment_over_menu_label(
+        self,
+    ) -> None:
         html = """
         <html>
           <body>
@@ -346,7 +366,9 @@ class LottissimoHelperTests(unittest.TestCase):
         self.assertEqual(page.title, "Mutter mit Jungen - Käthe Kollwitz")
         self.assertIsNone(page.artist_name)
         self.assertEqual(page.auctioneer_name, "Test Haus")
-        self.assertEqual(page.image_urls, ["https://cdn.globalauctionplatform.com/auction/img1.jpg"])
+        self.assertEqual(
+            page.image_urls, ["https://cdn.globalauctionplatform.com/auction/img1.jpg"]
+        )
 
         auction_details = json.loads(page.auction_details)
         self.assertEqual(auction_details["lotNumber"], "2046")
@@ -458,7 +480,9 @@ class LottissimoHelperTests(unittest.TestCase):
         self.assertNotIn("currentBids", auction_details)
         self.assertNotIn("lotImageCount", auction_details)
 
-    def test_extract_auction_metadata_uses_lot_end_date_when_start_missing(self) -> None:
+    def test_extract_auction_metadata_uses_lot_end_date_when_start_missing(
+        self,
+    ) -> None:
         auction_date, city, country = self.parser._extract_auction_metadata(
             "",
             {

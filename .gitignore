@@ -20,7 +20,7 @@ htmlcov/
 
 # Generated runtime state
 cache/
-local/
+local
 logs/
 transfer/
 backups/

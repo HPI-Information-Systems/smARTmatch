@@ -50,6 +50,7 @@ class LottissimoScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
         self.max_lots = None if max_lots is None else max(1, int(max_lots))
         self.base_url = GEMAELDE_URL if gemaelde_only else BASE_URL
         self._auctioneer_cache: dict[str, Optional[Auctioneer]] = {}
+        self._listing_html_cache: dict[str, str] = {}
         self._parser = LottissimoLotParser(log=self.log)
 
         user_agents = user_agent_pool(os.getenv("LOTTISSIMO_USER_AGENT"))
@@ -142,7 +143,9 @@ class LottissimoScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
         )
 
         for idx, page_url in enumerate(page_urls, start=1):
-            html = self.fetch_html(page_url, wait_for_selector='a[href*="/lot-"]')
+            html = self._listing_html_cache.pop(page_url, None)
+            if html is None:
+                html = self.fetch_html(page_url, wait_for_selector='a[href*="/lot-"]')
             if not html:
                 continue
 
@@ -154,10 +157,11 @@ class LottissimoScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
                 if target_count is not None and len(lot_urls) >= target_count:
                     break
 
+            self.log(
+                f"[page {idx}/{len(page_urls)}] collected {len(lot_urls)} unique lot URLs so far"
+            )
             if target_count is not None and len(lot_urls) >= target_count:
                 break
-
-            self.log(f"[page {idx}/{len(page_urls)}] collected {len(lot_urls)} unique lot URLs so far")
 
         if skip:
             lot_urls = lot_urls[skip:]
@@ -212,7 +216,9 @@ class LottissimoScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
             artist_id=artist_id,
             artist_full_name=artist_name,
             artist_raw_data=(
-                json_dumps({"source": "lot-tissimo", "name": artist_name}) if artist_name else None
+                json_dumps({"source": "lot-tissimo", "name": artist_name})
+                if artist_name
+                else None
             ),
             description=lot.description,
             provenance=lot.provenance,
@@ -230,7 +236,9 @@ class LottissimoScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
         if normalized_title is None and lot_id is not None:
             self._clear_title_column(lot_id=lot_id)
 
-        self.log(f"[save] lot {artwork.lot_id or lot.lot_id} with {len(local_images)} images")
+        self.log(
+            f"[save] lot {artwork.lot_id or lot.lot_id} with {len(local_images)} images"
+        )
         return None
 
     def _clear_title_column(self, *, lot_id: str) -> None:
@@ -241,11 +249,14 @@ class LottissimoScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
         )
 
     def _get_page_urls(self) -> list[str]:
+        self._listing_html_cache.clear()
+
         def pages_for(url: str) -> list[str]:
             html = self.fetch_html(url, wait_for_selector='a[href*="/lot-"]')
             if not html:
                 return []
 
+            self._listing_html_cache[url] = html
             page_count = 1
             match = PAGE_COUNT_RE.search(html)
             if match:
@@ -257,11 +268,16 @@ class LottissimoScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
             if self.max_pages is not None:
                 page_count = max(1, min(page_count, self.max_pages))
 
-            return [url] + [f"{url}&page={i}" for i in range(2, page_count + 1)]
+            separator = "&" if "?" in url else "?"
+            return [url] + [
+                f"{url}{separator}page={i}" for i in range(2, page_count + 1)
+            ]
 
         page_urls = pages_for(self.base_url)
         if not page_urls:
-            self.log("[fallback] no pages for selected category; using default listings")
+            self.log(
+                "[fallback] no pages for selected category; using default listings"
+            )
             page_urls = pages_for(BASE_URL)
 
         return page_urls

@@ -23,11 +23,13 @@ class LottissimoScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
         *,
         db: Optional[Database] = None,
         max_pages: Optional[int] = None,
+        max_lots: Optional[int] = None,
         min_wait: float = 0.25,
         max_wait: float = 0.75,
         purge: bool = False,
         images_dir: Optional[str] = None,
         gemaelde_only: bool = False,
+        download_images: bool = True,
         commit_every: int = 20,
     ) -> None:
         super().__init__(
@@ -37,11 +39,12 @@ class LottissimoScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
             max_wait=max_wait,
             purge=purge,
             commit_every=commit_every,
-            download_images=True,
+            download_images=download_images,
             images_dir=images_dir,
             module_file=__file__,
         )
         self.max_pages = max_pages
+        self.max_lots = None if max_lots is None else max(1, int(max_lots))
         self.base_url = GEMAELDE_URL if gemaelde_only else BASE_URL
         self._auctioneer_cache: dict[str, Optional[Auctioneer]] = {}
         self._parser = LottissimoLotParser(log=self.log)
@@ -106,6 +109,9 @@ class LottissimoScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
 
         lot_urls: list[str] = []
         seen: set[str] = set()
+        target_count = (
+            None if self.max_lots is None else self.max_lots + max(0, int(skip))
+        )
 
         for idx, page_url in enumerate(page_urls, start=1):
             html = self.fetch_html(page_url, wait_for_selector='a[href*="/lot-"]')
@@ -117,11 +123,18 @@ class LottissimoScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
                     continue
                 seen.add(lot_url)
                 lot_urls.append(lot_url)
+                if target_count is not None and len(lot_urls) >= target_count:
+                    break
+
+            if target_count is not None and len(lot_urls) >= target_count:
+                break
 
             self.log(f"[page {idx}/{len(page_urls)}] collected {len(lot_urls)} unique lot URLs so far")
 
         if skip:
             lot_urls = lot_urls[skip:]
+        if self.max_lots is not None:
+            lot_urls = lot_urls[: self.max_lots]
 
         self.log(f"[discover] {len(lot_urls)} unique lots")
         return lot_urls

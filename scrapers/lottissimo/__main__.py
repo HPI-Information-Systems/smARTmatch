@@ -18,6 +18,12 @@ def parse_args() -> argparse.Namespace:
         help="Limit number of list pages to scan.",
     )
     parser.add_argument(
+        "--max-lots",
+        type=int,
+        default=None,
+        help="Limit number of lots to scrape after applying --skip.",
+    )
+    parser.add_argument(
         "--purge",
         action="store_true",
         help="Delete existing lot-tissimo lots before scraping.",
@@ -41,6 +47,11 @@ def parse_args() -> argparse.Namespace:
         help="Directory to store downloaded lot images (defaults to db/data-production/images).",
     )
     parser.add_argument(
+        "--skip-images",
+        action="store_true",
+        help="Do not download lot images.",
+    )
+    parser.add_argument(
         "--gemaelde-only",
         action="store_true",
         help="Scrape only the 'Gemaelde und Mischtechnike' category.",
@@ -59,11 +70,13 @@ def main() -> None:
     args = parse_args()
     lottissimo_scraper = LottissimoScraper(
         max_pages=args.max_pages,
+        max_lots=args.max_lots,
         min_wait=args.min_wait,
         max_wait=args.max_wait,
         purge=args.purge,
         images_dir=args.images_dir,
         gemaelde_only=args.gemaelde_only,
+        download_images=not args.skip_images,
         commit_every=args.commit_every,
     )
     lottissimo_scraper.run(skip=args.skip)

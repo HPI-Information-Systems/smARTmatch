@@ -494,6 +494,27 @@ class LottissimoHelperTests(unittest.TestCase):
         self.assertTrue(urls[0].endswith("lot-b"))
         self.assertTrue(urls[1].endswith("lot-c"))
 
+    def test_get_urls_stops_at_max_lots(self) -> None:
+        self.scraper.max_lots = 2
+        page_one = """
+        <a href="/de-de/auction-catalogues/example/catalogue-id-example/lot-a"></a>
+        <a href="/de-de/auction-catalogues/example/catalogue-id-example/lot-b"></a>
+        <a href="/de-de/auction-catalogues/example/catalogue-id-example/lot-c"></a>
+        """
+
+        with (
+            patch.object(self.scraper, "_get_page_urls", return_value=["p1", "p2"]),
+            patch.object(
+                self.scraper, "fetch_html", return_value=page_one
+            ) as fetch_html,
+        ):
+            urls = list(self.scraper.get_urls(skip=0))
+
+        self.assertEqual(len(urls), 2)
+        self.assertTrue(urls[0].endswith("lot-a"))
+        self.assertTrue(urls[1].endswith("lot-b"))
+        fetch_html.assert_called_once()
+
     def test_extract_lot_urls_filters_and_normalizes_links(self) -> None:
         html = """
         <a href="/de-de/auction-catalogues/example/catalogue-id-example/lot-a"></a>

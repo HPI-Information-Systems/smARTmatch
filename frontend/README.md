@@ -13,6 +13,7 @@ Required settings:
 | `FRONTEND_HOST` | Listen address in container | `0.0.0.0` |
 | `FRONTEND_PORT` | Listen port in container | `80` |
 | `FRONTEND_DEBUG` | Flask debug mode | `0` |
+| `SMARTMATCH_MATCH_EXPIRATION_AGE` | Age after which matches appear under `Abgelaufen`; positive duration using `s`, `m`, `h`, or `d` | `30d` |
 | `SMARTMATCH_STATS_CACHE_TTL_SECONDS` | Dashboard statistics cache lifetime | `60` |
 
 ```bash

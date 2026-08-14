@@ -5,6 +5,8 @@
         {% set current_category = 'Suchergebnisse' %}
     {% elif rating == 'all' and bookmarked == 'all' %}
         {% set current_category = 'Matches' %}
+    {% elif rating == 'expired' %}
+        {% set current_category = 'Abgelaufen' %}
     {% elif bookmarked == 'true' %}
         {% set current_category = 'Gemerkt' %}
     {% elif rating == 'accepted' %}
@@ -46,6 +48,13 @@
                            href="{{ url_for('match_list', rating='accepted', sort='newest', bookmarked='all', image_weight=image_weight) }}">
                             <span><i class="bi bi-check-circle me-1" aria-hidden="true"></i> Akzeptiert</span>
                             <span class="directory-count">{{ directory_counts['accepted'] }}</span>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link link-body-emphasis d-flex align-items-center justify-content-between gap-2 {% if not search_active and rating == 'expired' %}active{% endif %}"
+                           href="{{ url_for('match_list', rating='expired', sort='similarity', bookmarked='all', image_weight=image_weight) }}">
+                            <span><i class="bi bi-clock me-1" aria-hidden="true"></i> Abgelaufen</span>
+                            <span class="directory-count">{{ directory_counts['expired'] }}</span>
                         </a>
                     </li>
                     <li class="nav-item">

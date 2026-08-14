@@ -111,6 +111,9 @@
     {% if search %}
         {% set current_category = 'Suchergebnisse' %}
         {% set current_category_icon = 'bi-search' %}
+    {% elif rating == 'expired' %}
+        {% set current_category = 'Abgelaufen' %}
+        {% set current_category_icon = 'bi-clock' %}
     {% elif bookmarked == 'true' %}
         {% set current_category = 'Gemerkt' %}
         {% set current_category_icon = 'bi-bookmark' %}

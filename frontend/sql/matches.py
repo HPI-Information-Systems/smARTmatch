@@ -5,7 +5,22 @@ The frontend derives a stable route identifier from that composite key using
 ``<lost_uuid>:<auction_uuid>`` and queries ``match_score`` directly.
 """
 
-_MATCH_GROUPS_CTE_SQL = """
+_MATCH_DATE_SQL = """
+CASE
+    WHEN ms.metadata_final_score IS NOT NULL
+         AND (ms.image_final_score IS NOT NULL OR ms.image_matching_confidence IS NOT NULL)
+        THEN GREATEST(ms.metadata_match_date, ms.image_match_date)
+    WHEN ms.image_final_score IS NOT NULL OR ms.image_matching_confidence IS NOT NULL
+        THEN ms.image_match_date
+    ELSE ms.metadata_match_date
+END
+""".strip()
+
+_MATCH_EXPIRATION_INTERVAL_SQL = (
+    "CAST(:match_expiration_seconds AS double precision) * INTERVAL '1 second'"
+)
+
+_MATCH_GROUPS_CTE_SQL = f"""
 WITH match_groups AS NOT MATERIALIZED (
     SELECT
         ms.lost_id::text || ':' || ms.auction_id::text AS match_id,
@@ -29,15 +44,8 @@ WITH match_groups AS NOT MATERIALIZED (
         END AS metadata_similarity,
         COALESCE(ms.rating, 0)::smallint AS rating,
         COALESCE(ms.bookmarked, false) AS bookmarked,
-        CASE
-            WHEN ms.metadata_final_score IS NOT NULL
-                 AND (ms.image_final_score IS NOT NULL OR ms.image_matching_confidence IS NOT NULL)
-                THEN GREATEST(ms.metadata_match_date, ms.image_match_date)
-            WHEN ms.image_final_score IS NOT NULL OR ms.image_matching_confidence IS NOT NULL
-                THEN ms.image_match_date
-            ELSE ms.metadata_match_date
-        END AS match_date,
-        COALESCE(ms.image_visualization, '{}'::jsonb) AS visualization,
+        {_MATCH_DATE_SQL} AS match_date,
+        COALESCE(ms.image_visualization, '{{}}'::jsonb) AS visualization,
         ms.best_image_file_id AS best_image_file_id,
         ms.lost_id::text || ':' || ms.auction_id::text AS metadata_match_id,
         ms.metadata_confidence_score::double precision AS metadata_confidence_score,
@@ -59,16 +67,20 @@ WITH match_groups AS NOT MATERIALIZED (
 )
 """
 
-DIRECTORY_COUNTS_SQL = """
+DIRECTORY_COUNTS_SQL = f"""
 SELECT
     count(*) AS all_count,
     count(*) FILTER (
-        WHERE COALESCE(rating, 0) = 0 AND COALESCE(bookmarked, false) IS FALSE
+        WHERE COALESCE(ms.rating, 0) = 0 AND COALESCE(ms.bookmarked, false) IS FALSE
     ) AS new_count,
-    count(*) FILTER (WHERE COALESCE(bookmarked, false) IS TRUE) AS bookmarked_count,
-    count(*) FILTER (WHERE COALESCE(rating, 0) > 0) AS accepted_count,
-    count(*) FILTER (WHERE COALESCE(rating, 0) < 0) AS discarded_count
-FROM match_score
+    count(*) FILTER (WHERE COALESCE(ms.bookmarked, false) IS TRUE) AS bookmarked_count,
+    count(*) FILTER (WHERE COALESCE(ms.rating, 0) > 0) AS accepted_count,
+    count(*) FILTER (
+        WHERE ({_MATCH_DATE_SQL})
+            < statement_timestamp() - {_MATCH_EXPIRATION_INTERVAL_SQL}
+    ) AS expired_count,
+    count(*) FILTER (WHERE COALESCE(ms.rating, 0) < 0) AS discarded_count
+FROM match_score ms
 """
 
 LOST_ARTWORK_INSTITUTION_CLASSIFICATIONS_SQL = """
@@ -129,16 +141,21 @@ search_filtered_groups AS (
 )
 """
 
-_MATCH_GROUP_FILTER_SQL = """
+_MATCH_GROUP_FILTER_SQL = f"""
 (
     CAST(:rating AS text) IS NULL
-    OR CAST(:rating AS text) NOT IN ('unrated', 'accepted', 'discarded')
+    OR CAST(:rating AS text) NOT IN ('unrated', 'accepted', 'discarded', 'expired')
     OR (CAST(:rating AS text) = 'unrated' AND rating = 0)
     OR (CAST(:rating AS text) = 'accepted' AND rating > 0)
     OR (CAST(:rating AS text) = 'discarded' AND rating < 0)
+    OR (
+        CAST(:rating AS text) = 'expired'
+        AND match_date < statement_timestamp() - {_MATCH_EXPIRATION_INTERVAL_SQL}
+    )
 )
 AND (
-    CAST(:bookmarked AS text) IS NULL
+    CAST(:rating AS text) = 'expired'
+    OR CAST(:bookmarked AS text) IS NULL
     OR CAST(:bookmarked AS text) NOT IN ('true', 'false')
     OR (CAST(:bookmarked AS text) = 'true' AND bookmarked IS TRUE)
     OR (CAST(:bookmarked AS text) = 'false' AND bookmarked IS FALSE)

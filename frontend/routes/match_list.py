@@ -5,11 +5,11 @@ from flask import render_template, request
 from .. import app as app_module
 
 
-_REVIEWED_CATEGORY_RATINGS = {"accepted", "discarded"}
+_NEWEST_SORT_CATEGORY_RATINGS = {"accepted", "discarded"}
 
 
 def _default_sort_for_category(rating, bookmarked):
-    if bookmarked == "true" or rating in _REVIEWED_CATEGORY_RATINGS:
+    if bookmarked == "true" or rating in _NEWEST_SORT_CATEGORY_RATINGS:
         return "newest"
     return "similarity"
 
@@ -35,6 +35,8 @@ def match_list():
         sort = "similarity"
         bookmarked = "false"
     else:
+        if rating == "expired":
+            bookmarked = "all"
         sort = sort or _default_sort_for_category(rating, bookmarked)
 
     new_matches_active = not search and rating == "unrated" and bookmarked == "false"

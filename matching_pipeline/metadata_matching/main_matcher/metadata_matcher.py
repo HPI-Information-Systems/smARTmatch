@@ -109,6 +109,7 @@ def bulk_insert(cur, conn, rows):
             technique_sim = EXCLUDED.technique_sim,
             metadata_final_score = EXCLUDED.metadata_final_score,
             metadata_confidence_score = EXCLUDED.metadata_confidence_score,
+            metadata_match_date = now(),
             metadata_matching_program = EXCLUDED.metadata_matching_program
         """,
         rows,

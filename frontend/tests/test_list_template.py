@@ -12,6 +12,7 @@ DIRECTORY_COUNTS = {
     "new": 0,
     "bookmarked": 0,
     "accepted": 0,
+    "expired": 0,
     "discarded": 0,
 }
 
@@ -98,6 +99,38 @@ def _page_row(source="metadata", score=0.9):
 
 
 class MatchListQueryTests(unittest.TestCase):
+    def test_match_expiration_age_reads_duration_units(self):
+        with patch.dict(
+            "os.environ", {app.MATCH_EXPIRATION_AGE_ENV: "30d"}, clear=False
+        ):
+            seconds = app._env_duration_seconds(
+                app.MATCH_EXPIRATION_AGE_ENV, app.DEFAULT_MATCH_EXPIRATION_AGE
+            )
+
+        self.assertEqual(seconds, 30 * 86_400)
+
+    def test_match_expiration_age_uses_default_when_env_is_empty(self):
+        with patch.dict(
+            "os.environ", {app.MATCH_EXPIRATION_AGE_ENV: ""}, clear=False
+        ):
+            seconds = app._env_duration_seconds(
+                app.MATCH_EXPIRATION_AGE_ENV, app.DEFAULT_MATCH_EXPIRATION_AGE
+            )
+
+        self.assertEqual(seconds, 30 * 86_400)
+
+    def test_match_expiration_age_rejects_invalid_durations(self):
+        for value in ("0d", "30", "1.5d", "-1d"):
+            with self.subTest(value=value):
+                with patch.dict(
+                    "os.environ", {app.MATCH_EXPIRATION_AGE_ENV: value}, clear=False
+                ):
+                    with self.assertRaises(ValueError):
+                        app._env_duration_seconds(
+                            app.MATCH_EXPIRATION_AGE_ENV,
+                            app.DEFAULT_MATCH_EXPIRATION_AGE,
+                        )
+
     def test_get_matches_page_uses_sql_grouping_and_pagination(self):
         with patch.object(
             app.session,
@@ -140,6 +173,11 @@ class MatchListQueryTests(unittest.TestCase):
         self.assertIn("CAST(:rating AS text) IS NULL", count_sql)
         self.assertIn("CAST(:bookmarked AS text) IS NULL", count_sql)
         self.assertIn("CAST(:source_filter AS text) = 'all'", count_sql)
+        self.assertIn("CAST(:rating AS text) = 'expired'", count_sql)
+        self.assertIn(
+            "CAST(:match_expiration_seconds AS double precision)", count_sql
+        )
+        self.assertIn("match_date < statement_timestamp()", count_sql)
         self.assertIn(
             "institution_classification = CAST(:source_filter AS text)", count_sql
         )
@@ -153,6 +191,7 @@ class MatchListQueryTests(unittest.TestCase):
             new_count=2,
             bookmarked_count=1,
             accepted_count=1,
+            expired_count=1,
             discarded_count=1,
         )
         with patch.object(
@@ -161,7 +200,12 @@ class MatchListQueryTests(unittest.TestCase):
             counts = app.get_directory_counts()
 
         self.assertEqual(counts["new"], 2)
+        self.assertEqual(counts["expired"], 1)
         execute.assert_called_once()
+        self.assertEqual(
+            execute.call_args.args[1]["match_expiration_seconds"],
+            app.MATCH_EXPIRATION_AGE_SECONDS,
+        )
         sql = str(execute.call_args.args[0])
         self.assertNotIn("match_categories AS", sql)
         self.assertIn("count(*) FILTER", sql)
@@ -272,12 +316,12 @@ class MatchListTemplateTests(unittest.TestCase):
                 ):
                     return self.client.get(path)
 
-    def render_detail(self, match):
+    def render_detail(self, match, query=""):
         with patch.object(app, "get_match_by_id", return_value=match):
             with patch.object(
                 app, "get_previous_and_next_match", return_value=(None, None)
             ):
-                return self.client.get(f"/match/{match.match_id}")
+                return self.client.get(f"/match/{match.match_id}{query}")
 
     def example_match(self):
         lost_artwork = SimpleNamespace(
@@ -293,6 +337,7 @@ class MatchListTemplateTests(unittest.TestCase):
             diameter=None,
             material_labels=["Oil"],
             technique_labels=["Canvas"],
+            institution_classification=None,
             image_paths=[],
             image_files=[],
         )
@@ -309,7 +354,6 @@ class MatchListTemplateTests(unittest.TestCase):
             dimensions_raw_data=None,
             material_labels=["Oil"],
             technique_labels=["Canvas"],
-            institution_classification=None,
             image_paths=[],
             image_files=[],
         )
@@ -390,6 +434,37 @@ class MatchListTemplateTests(unittest.TestCase):
 
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(get_page.call_args.kwargs["sort"], "newest")
+
+    def test_expired_category_defaults_sort_by_similarity(self):
+        match_page = app.MatchPage([], 0, 1, 20, 0)
+        with patch.object(
+            app, "get_matches_page", return_value=match_page
+        ) as get_page:
+            with patch.object(
+                app, "get_directory_counts", return_value=DIRECTORY_COUNTS
+            ):
+                response = self.client.get(
+                    "/list?rating=expired&bookmarked=all"
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(get_page.call_args.kwargs["sort"], "similarity")
+
+    def test_expired_category_includes_all_bookmark_states(self):
+        match_page = app.MatchPage([], 0, 1, 20, 0)
+        with patch.object(
+            app, "get_matches_page", return_value=match_page
+        ) as get_page:
+            with patch.object(
+                app, "get_directory_counts", return_value=DIRECTORY_COUNTS
+            ):
+                response = self.client.get(
+                    "/list?rating=expired&bookmarked=true"
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(get_page.call_args.kwargs["rating"], "expired")
+        self.assertEqual(get_page.call_args.kwargs["bookmarked"], "all")
 
     def test_source_filter_is_hidden_with_fewer_than_two_classifications(self):
         response = self.render_list("/list")
@@ -486,7 +561,17 @@ class MatchListTemplateTests(unittest.TestCase):
         self.assertIn("rating=unrated&amp;sort=similarity", html)
         self.assertIn("rating=all&amp;sort=newest&amp;bookmarked=true", html)
         self.assertIn("rating=accepted&amp;sort=newest", html)
+        self.assertIn("rating=expired&amp;sort=similarity", html)
         self.assertIn("rating=discarded&amp;sort=newest", html)
+        self.assertIn("bi-clock", html)
+        self.assertLess(html.index("Abgelaufen"), html.index("Verworfen"))
+
+    def test_expired_category_heading_is_rendered(self):
+        response = self.render_list("/list?rating=expired&bookmarked=all")
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn('<h1 class="h5 mb-1">Abgelaufen</h1>', html)
 
     def test_match_overview_contains_dimensions(self):
         response = self.render_list("/list", matches=[self.example_match()])
@@ -518,6 +603,16 @@ class MatchListTemplateTests(unittest.TestCase):
         html = response.get_data(as_text=True)
         self.assertIn('/db_image/file/22', html)
         self.assertNotIn('/db_image/auction/auction-artwork-1', html)
+
+    def test_expired_match_detail_uses_clock_category_indicator(self):
+        response = self.render_detail(
+            self.example_match(), "?rating=expired&bookmarked=all"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn("Abgelaufen", html)
+        self.assertIn("bi-clock", html)
 
     def test_match_detail_prefers_extracted_artist_full_name(self):
         match = self.example_match()

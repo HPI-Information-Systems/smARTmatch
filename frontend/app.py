@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,31 @@ def _env_int(name, default):
         return int(value)
     except ValueError as exc:
         raise ValueError(f"Environment variable {name} must be an integer") from exc
+
+
+MATCH_EXPIRATION_AGE_ENV = "SMARTMATCH_MATCH_EXPIRATION_AGE"
+DEFAULT_MATCH_EXPIRATION_AGE = "30d"
+_DURATION_PATTERN = re.compile(r"^([1-9]\d*)([smhd])$")
+_DURATION_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3_600, "d": 86_400}
+
+
+def _env_duration_seconds(name, default):
+    value = os.getenv(name)
+    raw_value = default if value is None or not value.strip() else value
+    normalized = raw_value.strip().lower()
+    match = _DURATION_PATTERN.fullmatch(normalized)
+    if match is None:
+        raise ValueError(
+            f"Environment variable {name} must be a positive duration like "
+            f"30d, 12h, or 15m; got {raw_value!r}"
+        )
+    amount, unit = match.groups()
+    return int(amount) * _DURATION_UNIT_SECONDS[unit]
+
+
+MATCH_EXPIRATION_AGE_SECONDS = _env_duration_seconds(
+    MATCH_EXPIRATION_AGE_ENV, DEFAULT_MATCH_EXPIRATION_AGE
+)
 
 
 DB_CONFIG = {
@@ -256,6 +282,7 @@ def _match_query_params(
         "apply_filters": not bool(clean_search),
         "source_filter": normalize_source_filter(source_filter),
         "image_weight": normalize_image_weight(image_weight),
+        "match_expiration_seconds": MATCH_EXPIRATION_AGE_SECONDS,
         "limit": page_size,
         "offset": (page_number - 1) * page_size,
     }
@@ -606,12 +633,16 @@ def get_top_unlabeled_auction_previews(limit=21):
 
 
 def get_directory_counts():
-    row = session.execute(text(match_sql.DIRECTORY_COUNTS_SQL)).one()
+    row = session.execute(
+        text(match_sql.DIRECTORY_COUNTS_SQL),
+        {"match_expiration_seconds": MATCH_EXPIRATION_AGE_SECONDS},
+    ).one()
     return {
         "all": int(row.all_count or 0),
         "new": int(row.new_count or 0),
         "bookmarked": int(row.bookmarked_count or 0),
         "accepted": int(row.accepted_count or 0),
+        "expired": int(row.expired_count or 0),
         "discarded": int(row.discarded_count or 0),
     }
 

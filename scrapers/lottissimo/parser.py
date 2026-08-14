@@ -58,15 +58,21 @@ class LottissimoLotParser(
 
             resolved_lot_id = self._resolve_lot_id(lot_id_hint, auction_meta_dict)
             lot_number = self._extract_display_lot_number(html, soup, auction_meta_dict)
-            auction_date, auction_city, auction_country = self._extract_auction_metadata(html, auction_meta_dict)
+            auction_date, auction_city, auction_country = (
+                self._extract_auction_metadata(html, auction_meta_dict)
+            )
 
-            raw_title = self._extract_raw_title(soup=soup, lot_id=resolved_lot_id, meta=auction_meta_dict)
+            raw_title = self._extract_raw_title(
+                soup=soup, lot_id=resolved_lot_id, meta=auction_meta_dict
+            )
             title, title_artist = self._split_title_and_artist(raw_title)
             artist_name = self._extract_artist_name(auction_meta_dict, title_artist)
 
             description_tag = self._find_tab_segment(soup, tab_name="description")
             auction_details_tag = self._find_tab_segment(soup, tab_name="auction")
-            description, provenance = self._extract_description_and_provenance(description_tag)
+            description, provenance = self._extract_description_and_provenance(
+                description_tag
+            )
             auctioneer_url = self._extract_auctioneer_url(lot_url)
 
             auction_details = self._auction_details_from_meta(
@@ -188,7 +194,9 @@ class LottissimoLotParser(
                 continue
 
             if cls._PROVENANCE_HEADING_RE.match(line):
-                next_line = raw_lines[idx + 1].strip() if idx + 1 < len(raw_lines) else ""
+                next_line = (
+                    raw_lines[idx + 1].strip() if idx + 1 < len(raw_lines) else ""
+                )
                 if next_line:
                     provenance_lines.append(next_line)
                     skip_next = True
@@ -217,7 +225,9 @@ class LottissimoLotParser(
         provenance = "\n".join(deduped_provenance).strip() or None
         return description, provenance
 
-    def _extract_raw_title(self, *, soup: BeautifulSoup, lot_id: str, meta: Optional[dict[str, str]]) -> str:
+    def _extract_raw_title(
+        self, *, soup: BeautifulSoup, lot_id: str, meta: Optional[dict[str, str]]
+    ) -> str:
         title_tag = soup.select_one("h1.header-lot-title")
         if title_tag:
             title = title_tag.get_text(" ", strip=True)
@@ -250,8 +260,11 @@ class LottissimoLotParser(
         return value or None
 
     def _extract_image_urls(self, soup: BeautifulSoup) -> list[str]:
-        gallery = soup.select_one(".touch-swipe-gallery")
-        gallery_html = str(gallery) if gallery else ""
+        # The current site uses ``.lot-image``; older and expired pages may
+        # still expose ``.touch-swipe-gallery``. Restrict extraction to these
+        # containers so recommendation cards and auctioneer logos are ignored.
+        galleries = soup.select(".touch-swipe-gallery, .lot-image")
+        gallery_html = "".join(str(gallery) for gallery in galleries)
 
         out: list[str] = []
         seen: set[str] = set()

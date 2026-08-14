@@ -360,6 +360,30 @@ class LottissimoHelperTests(unittest.TestCase):
         self.assertEqual(auction_details["currentBids"], 1)
         self.assertEqual(auction_details["deliveryAvailable"], True)
 
+    def test_extract_images_from_current_lot_image_markup(self) -> None:
+        html = """
+        <div class="lot-image">
+          <img
+            data-zoom-url="https://cdn.example.test/images/one.jpg"
+            src="https://cdn.example.test/images/one.jpg?w=1080&amp;h=720"
+          />
+          <img
+            data-src="https://cdn.example.test/images/two.jpg?w=1080&amp;h=720"
+          />
+          <img src="https://cdn.example.test/images/one.jpg?w=80&amp;h=80" />
+        </div>
+        <img src="https://cdn.example.test/recommendation.jpg" />
+        """
+
+        soup = BeautifulSoup(html, "lxml")
+        self.assertEqual(
+            self.parser._extract_image_urls(soup),
+            [
+                "https://cdn.example.test/images/one.jpg",
+                "https://cdn.example.test/images/two.jpg",
+            ],
+        )
+
     def test_parse_lot_page_omits_zero_estimates_but_keeps_opening_price(self) -> None:
         html = """
         <html>

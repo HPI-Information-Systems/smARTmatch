@@ -20,14 +20,20 @@ class LottissimoHttpTests(unittest.TestCase):
             **kwargs,
         )
 
+    def test_browser_fallback_uses_same_validated_user_agents(self) -> None:
+        scraper = self._build_scraper()
+
+        profile_user_agents = tuple(
+            headers["User-Agent"] for _session, headers in scraper._http_profiles
+        )
+        self.assertEqual(scraper._browser_user_agents, profile_user_agents)
+
     def test_fetch_html_prefers_server_rendered_response(self) -> None:
         scraper = self._build_scraper()
 
         listing_html = (
             '<html><a href="/de-de/auction-catalogues/house/'
-            'catalogue-id-sale/lot-abc">lot</a>'
-            + (" " * 5_000)
-            + "</html>"
+            'catalogue-id-sale/lot-abc">lot</a>' + (" " * 5_000) + "</html>"
         )
         with (
             patch(
@@ -42,7 +48,33 @@ class LottissimoHttpTests(unittest.TestCase):
         http_mock.assert_called_once()
         pw_mock.assert_not_called()
 
-    def test_fetch_html_falls_back_when_expected_listing_content_is_absent(self) -> None:
+    def test_fetch_html_rotates_profile_before_browser_fallback(self) -> None:
+        scraper = self._build_scraper()
+        listing_html = (
+            '<html><a href="/de-de/auction-catalogues/house/'
+            'catalogue-id-sale/lot-abc">lot</a>' + (" " * 5_000) + "</html>"
+        )
+
+        with (
+            patch(
+                "scrapers.lottissimo.scraper.request_html",
+                side_effect=[None, listing_html],
+            ) as http_mock,
+            patch.object(scraper, "fetch_html_playwright") as pw_mock,
+        ):
+            result = scraper.fetch_html(
+                "https://www.lot-tissimo.com/de/",
+                wait_for_selector='a[href*="/lot-"]',
+            )
+
+        self.assertIn("lot-abc", result)
+        self.assertEqual(http_mock.call_count, 2)
+        self.assertEqual(scraper._active_http_profile, 2)
+        pw_mock.assert_not_called()
+
+    def test_fetch_html_falls_back_when_expected_listing_content_is_absent(
+        self,
+    ) -> None:
         scraper = self._build_scraper()
         selector = 'a[href*="/lot-"]'
 

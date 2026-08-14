@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 from typing import Iterable, Optional
 
+import requests
 from bs4 import BeautifulSoup
 from sqlalchemy import text
 
@@ -10,6 +12,7 @@ from ..utils.auction_helpers import clean_whitespace, fit_varchar, json_dumps
 from ..utils.auction_scraper import AuctionPlatformScraper
 from ..utils.browser import PlaywrightFetchMixin
 from ..utils.request_handler import request_html
+from ..utils.user_agents import user_agent_pool
 from .constants import BASE_URL, GEMAELDE_URL, LOT_LINK_RE, PAGE_COUNT_RE, PARSER
 from .entities import resolve_artist_id, resolve_auctioneer
 from .parser import LottissimoLotParser
@@ -49,24 +52,49 @@ class LottissimoScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
         self._auctioneer_cache: dict[str, Optional[Auctioneer]] = {}
         self._parser = LottissimoLotParser(log=self.log)
 
+        user_agents = user_agent_pool(os.getenv("LOTTISSIMO_USER_AGENT"))
+        self._browser_user_agents = tuple(user_agents)
+        self._http_profiles = [
+            (
+                requests.Session(),
+                {
+                    "User-Agent": user_agent,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "de-DE,de;q=0.9,en;q=0.7",
+                },
+            )
+            for user_agent in user_agents
+        ]
+        self._active_http_profile = 0
+
     def _after_run(self) -> None:
         self._stop_browser()
 
     def fetch_html(self, url: str, wait_for_selector: Optional[str] = None) -> str:
         """Prefer a complete server-rendered page, then fall back to Chromium."""
         self.log(f"[get] {url}")
-        html = request_html(
-            url,
-            min_wait=self.min_wait,
-            max_wait=self.max_wait,
-            log=self.log,
-        )
-        if self._http_page_is_usable(
-            url=url,
-            html=html or "",
-            wait_for_selector=wait_for_selector,
-        ):
-            return html or ""
+        profile_count = len(self._http_profiles)
+        attempts = min(3, profile_count)
+        for offset in range(attempts):
+            profile_index = (self._active_http_profile + offset) % profile_count
+            session, headers = self._http_profiles[profile_index]
+            html = request_html(
+                url,
+                max_retries=2,
+                min_wait=self.min_wait,
+                max_wait=self.max_wait,
+                log=self.log,
+                session=session,
+                headers=headers,
+                expected_status=200,
+            )
+            if self._http_page_is_usable(
+                url=url,
+                html=html or "",
+                wait_for_selector=wait_for_selector,
+            ):
+                self._active_http_profile = (profile_index + 1) % profile_count
+                return html or ""
 
         self.log("[http] incomplete or blocked response; falling back to Playwright")
         return self.fetch_html_playwright(url, wait_for_selector=wait_for_selector)

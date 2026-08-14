@@ -189,6 +189,7 @@ SELECT
     l.description AS lost_description,
     l.provenance AS lost_provenance,
     l.lost_art_url AS lost_art_url,
+    l.institution_classification AS lost_institution_classification,
     COALESCE(lost_artists.artist_names, ARRAY[]::text[]) AS lost_artist_names,
     COALESCE(lost_images.image_file_ids, ARRAY[]::integer[]) AS lost_image_file_ids,
     COALESCE(lost_images.image_paths, ARRAY[]::text[]) AS lost_image_paths,

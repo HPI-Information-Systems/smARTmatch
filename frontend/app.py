@@ -337,6 +337,9 @@ def _page_row_artwork(row, prefix):
             description=getattr(row, "lost_description", None),
             provenance=getattr(row, "lost_provenance", None),
             lost_art_url=getattr(row, "lost_art_url", None),
+            institution_classification=getattr(
+                row, "lost_institution_classification", None
+            ),
             image_paths=image_paths,
             image_files=image_files,
         )

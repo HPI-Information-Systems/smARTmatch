@@ -1,11 +1,13 @@
 {% extends "base.html" %}
 {% block content %}
     {% from "_score_progress_stack.html" import score_progress_stack %}
-    {% macro source_link(url) -%}
+    {% macro source_link(url, institution=none) -%}
         {% if url %}
             <a class="link-primary" href="{{ url }}" target="_blank" rel="noopener noreferrer">
                 <i class="bi bi-box-arrow-up-right me-1" aria-hidden="true"></i>Quelle öffnen
             </a>
+        {% elif institution %}
+            {{ institution }}
         {% else %}
             <i class="text-muted">Unbekannt</i>
         {% endif %}
@@ -363,7 +365,7 @@
                                     </tr>
                                     <tr>
                                         <td>Quelle</td>
-                                        <td class="text-end">{{ source_link(match.lost_artwork.lost_art_url) }}</td>
+                                        <td class="text-end">{{ source_link(match.lost_artwork.lost_art_url, match.lost_artwork.institution_classification) }}</td>
                                         <td class="text-center text-muted">--</td>
                                         <td>{{ source_link(match.auction_artwork.lot_url) }}</td>
                                         <td></td>

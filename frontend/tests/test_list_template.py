@@ -76,6 +76,7 @@ def _page_row(source="metadata", score=0.9):
         lost_diameter=None,
         lost_material="Oil",
         lost_technique="Canvas",
+        lost_institution_classification="Museum A",
         lost_artist_names=["Lost Artist"],
         lost_image_file_ids=[],
         lost_image_paths=[],
@@ -120,6 +121,14 @@ class MatchListQueryTests(unittest.TestCase):
             page_sql.index("JOIN lost_artwork l"),
         )
         self.assertIn("source_lost.institution_classification", count_sql)
+        self.assertIn(
+            "l.institution_classification AS lost_institution_classification",
+            page_sql,
+        )
+        self.assertEqual(
+            match_page.matches[0].lost_artwork.institution_classification,
+            "Museum A",
+        )
         self.assertEqual(count_sql.count("SELECT count(*)"), 1)
 
     def test_match_filter_params_are_cast_for_postgres_type_inference(self):
@@ -300,6 +309,7 @@ class MatchListTemplateTests(unittest.TestCase):
             dimensions_raw_data=None,
             material_labels=["Oil"],
             technique_labels=["Canvas"],
+            institution_classification=None,
             image_paths=[],
             image_files=[],
         )
@@ -519,6 +529,19 @@ class MatchListTemplateTests(unittest.TestCase):
         html = response.get_data(as_text=True)
         self.assertIn("Extracted Detail Artist", html)
         self.assertNotIn("Raw Detail Artist", html)
+
+    def test_match_detail_uses_lost_institution_when_source_url_is_missing(self):
+        match = self.example_match()
+        match.lost_artwork.lost_art_url = None
+        match.lost_artwork.institution_classification = "Museum A"
+
+        response = self.render_detail(match)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertRegex(
+            response.get_data(as_text=True),
+            r'<td class="text-end">\s*Museum A\s*</td>',
+        )
 
     def test_combined_score_uses_weighted_component_bars(self):
         response = self.render_list("/list?image_weight=25", matches=[self.example_match()])

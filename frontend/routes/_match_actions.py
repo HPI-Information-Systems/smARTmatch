@@ -56,11 +56,11 @@ def target_filter(match_id):
     )
 
 
-def update_match_rating(match_id, rating):
+def _update_match(match_id, **values):
     stmt = (
         update(app_module.MatchScore)
         .where(*target_filter(match_id))
-        .values(rating=rating)
+        .values(**values)
     )
     stmt.compile()
 
@@ -68,20 +68,18 @@ def update_match_rating(match_id, rating):
         conn.execute(stmt)
         conn.commit()
     app_module.session.expire_all()
+
+
+def update_match_rating(match_id, rating):
+    _update_match(match_id, rating=rating)
 
 
 def update_match_bookmark(match_id, bookmarked):
-    stmt = (
-        update(app_module.MatchScore)
-        .where(*target_filter(match_id))
-        .values(bookmarked=bookmarked)
-    )
-    stmt.compile()
+    _update_match(match_id, bookmarked=bookmarked)
 
-    with app_module.engine.connect() as conn:
-        conn.execute(stmt)
-        conn.commit()
-    app_module.session.expire_all()
+
+def discard_match(match_id):
+    _update_match(match_id, rating=-1, bookmarked=False)
 
 
 def redirect_response(url):

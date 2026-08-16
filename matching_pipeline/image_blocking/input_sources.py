@@ -88,6 +88,55 @@ def read_image_file_csv(csv_path: Path) -> tuple[list[ImageFileRow], list[ImageF
     return grouped[LOST_ROLE], grouped[AUCTION_ROLE]
 
 
+def reset_auction_image_matching_for_replay() -> tuple[int, int]:
+    """Make every auction image pending before an explicit processed-image replay."""
+
+    conn = connect_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE auction_artwork_image_file link
+                SET is_image_matching_processed = false,
+                    is_image_matching_completed_without_error = false
+                FROM image_file image
+                WHERE image.image_file_id = link.image_file_id
+                  AND image.cleaned_up_at IS NULL
+                  AND image.file_path IS NOT NULL
+                  AND (
+                      link.is_image_matching_processed = true
+                      OR link.is_image_matching_completed_without_error = true
+                  )
+                """
+            )
+            link_count = int(cur.rowcount or 0)
+            cur.execute(
+                """
+                UPDATE auction_artwork artwork
+                SET is_image_matching_processed = false,
+                    is_image_matching_processed_at = NULL
+                WHERE artwork.is_image_matching_processed = true
+                  AND EXISTS (
+                      SELECT 1
+                      FROM auction_artwork_image_file link
+                      JOIN image_file image
+                        ON image.image_file_id = link.image_file_id
+                      WHERE link.auction_artwork_id = artwork.auction_artwork_id
+                        AND image.cleaned_up_at IS NULL
+                        AND image.file_path IS NOT NULL
+                  )
+                """
+            )
+            artwork_count = int(cur.rowcount or 0)
+        conn.commit()
+        return link_count, artwork_count
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def has_unprocessed_auction_image_file_rows() -> bool:
     """Return whether DB-backed matching has any unprocessed auction image links."""
     with connect_db() as conn:
@@ -98,7 +147,19 @@ def has_unprocessed_auction_image_file_rows() -> bool:
                     SELECT 1
                     FROM auction_artwork_image_file aaif
                     JOIN image_file img ON img.image_file_id = aaif.image_file_id
-                    WHERE aaif.is_image_matching_processed = false
+                    WHERE img.cleaned_up_at IS NULL
+                      AND img.file_path IS NOT NULL
+                      AND (
+                        aaif.is_image_matching_processed = false
+                        OR (
+                            aaif.is_image_matching_completed_without_error = false
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM match_score score
+                                WHERE score.auction_id = aaif.auction_artwork_id
+                            )
+                        )
+                    )
                     LIMIT 1
                 )
                 """
@@ -201,6 +262,8 @@ def _db_query(
             SELECT img.image_file_id::text, img.file_path
             FROM lost_artwork_image_file laif
             JOIN image_file img ON img.image_file_id = laif.image_file_id
+            WHERE img.cleaned_up_at IS NULL
+              AND img.file_path IS NOT NULL
             GROUP BY img.image_file_id, img.file_path
             ORDER BY img.image_file_id ASC
         """
@@ -217,27 +280,40 @@ def _auction_image_file_query(
     *,
     use_auction_artwork_limit: bool,
 ) -> str:
-    link_filter = ""
+    state_filter = ""
     if not include_processed_auction_images:
-        link_filter = "WHERE aaif.is_image_matching_processed = false"
+        state_filter = """AND (
+            aaif.is_image_matching_processed = false
+            OR (
+                aaif.is_image_matching_completed_without_error = false
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM match_score score
+                    WHERE score.auction_id = aaif.auction_artwork_id
+                )
+            )
+        )"""
     if not use_auction_artwork_limit:
         return f"""
             SELECT img.image_file_id::text, img.file_path
             FROM auction_artwork_image_file aaif
             JOIN image_file img ON img.image_file_id = aaif.image_file_id
-            {link_filter}
+            WHERE img.cleaned_up_at IS NULL
+              AND img.file_path IS NOT NULL
+              {state_filter}
             GROUP BY img.image_file_id, img.file_path
             ORDER BY img.image_file_id ASC
         """
 
-    image_filter = ""
-    if not include_processed_auction_images:
-        image_filter = "AND aaif.is_image_matching_processed = false"
     return f"""
         WITH selected_auction_artwork AS (
             SELECT aaif.auction_artwork_id
             FROM auction_artwork_image_file aaif
-            {link_filter}
+            JOIN image_file selected_image
+              ON selected_image.image_file_id = aaif.image_file_id
+            WHERE selected_image.cleaned_up_at IS NULL
+              AND selected_image.file_path IS NOT NULL
+              {state_filter}
             GROUP BY aaif.auction_artwork_id
             ORDER BY aaif.auction_artwork_id ASC
             LIMIT %s
@@ -247,8 +323,9 @@ def _auction_image_file_query(
         JOIN auction_artwork_image_file aaif
           ON aaif.auction_artwork_id = selected.auction_artwork_id
         JOIN image_file img ON img.image_file_id = aaif.image_file_id
-        WHERE true
-          {image_filter}
+        WHERE img.cleaned_up_at IS NULL
+          AND img.file_path IS NOT NULL
+          {state_filter}
         GROUP BY img.image_file_id, img.file_path
         ORDER BY img.image_file_id ASC
     """

@@ -8,8 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
 
-from matching_pipeline.shared.env import env_hf_token
+from matching_pipeline.shared.env import env_hf_token, env_image_root
 from matching_pipeline.shared.artifacts import write_image_files_parquet
+from shared.image_storage_lock import image_storage_lock
 
 from .candidate_generation import clear_candidate_parts, write_candidate_parts
 from .config import (
@@ -32,6 +33,7 @@ from .input_sources import (
     has_unprocessed_auction_image_file_rows,
     load_db_image_file_rows,
     read_image_file_csv,
+    reset_auction_image_matching_for_replay,
     write_image_file_csv,
 )
 
@@ -74,6 +76,8 @@ def create_blocking_input_csv(
         effective_auction_limit,
         include_processed_auction_images,
     )
+    if include_processed_auction_images:
+        _prepare_processed_image_replay()
     lost_rows, auction_rows = load_db_image_file_rows(
         lost_limit=lost_limit,
         auction_limit=effective_auction_limit,
@@ -133,6 +137,8 @@ def run_image_blocking(
         lost_limit,
         effective_auction_limit,
     )
+    if include_processed_auction_images and input_csv is None:
+        _prepare_processed_image_replay()
     if _should_skip_for_empty_db_auction_input(
         input_csv,
         include_processed_auction_images,
@@ -236,6 +242,16 @@ def run_image_blocking(
         skipped_count,
         int(lost_cache.metadata.get("generated_count", 0)),
         embedded_count,
+    )
+
+
+def _prepare_processed_image_replay() -> None:
+    with image_storage_lock(env_image_root(), exclusive=False):
+        replay_links, replay_artworks = reset_auction_image_matching_for_replay()
+    logger.info(
+        "Prepared explicit processed-image replay: pending_links=%d pending_artworks=%d",
+        replay_links,
+        replay_artworks,
     )
 
 

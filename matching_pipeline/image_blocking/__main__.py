@@ -80,6 +80,11 @@ def parse_blocking_args_and_run_blocking_with_result(
         logger.info("Running blocking only; downstream LightGlue matching will not start")
     if args.only_write_input_csv and args.input_csv is not None:
         parser.error("--only-write-input-csv cannot be used with --input-csv")
+    if args.include_processed_auction_images and args.input_csv is not None:
+        parser.error(
+            "--include-processed-auction-images cannot be used with --input-csv; "
+            "generate a DB-backed replay snapshot first"
+        )
     if args.only_write_input_csv:
         result = create_blocking_input_csv(
             lost_limit=args.lost_limit,

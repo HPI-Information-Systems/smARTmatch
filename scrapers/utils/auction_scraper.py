@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Optional, Sequence
 from uuid import UUID, uuid4
 
+from shared.image_storage_lock import image_storage_lock
+
 from ..db_interface import Database
 from .auction_helpers import purge_platform_auction_artworks, resolve_images_dir
 from .image_storage import platform_image_prefix, safe_image_prefix
@@ -42,6 +44,18 @@ class AuctionPlatformScraper(Scraper):
         self.image_prefix = image_prefix
 
     def run(self, *, skip: int = 0, report_every: int = 10) -> None:
+        with image_storage_lock(self.images_dir, exclusive=False):
+            self._run_with_image_storage_locked(
+                skip=skip,
+                report_every=report_every,
+            )
+
+    def _run_with_image_storage_locked(
+        self,
+        *,
+        skip: int,
+        report_every: int,
+    ) -> None:
         if self.db.session is not None:
             self._run_with_session(skip=skip, report_every=report_every)
             return

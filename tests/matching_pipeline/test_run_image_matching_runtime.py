@@ -136,9 +136,7 @@ class MatchingRuntimeTests(unittest.TestCase):
                 save_missing_feats=False,
             )
 
-        self.assertEqual(
-            result.processed_auction_file_ids, ["auction-1", "auction-2"]
-        )
+        self.assertEqual(result.processed_auction_file_ids, [])
         self.assertEqual(
             (result.pairs_processed, result.failed_images, result.failed_pairs),
             (3, 1, 1),
@@ -199,6 +197,7 @@ class MatchingRuntimeTests(unittest.TestCase):
 
         self.assertEqual(result.pairs_processed, 1)
         self.assertEqual(result.accepted_matches, [])
+        self.assertEqual(result.processed_auction_file_ids, ["one", "empty"])
         extractor.load_or_extract.assert_not_called()
         self.assertEqual(extractor.extract.call_count, 3)
         write_results.assert_called_once_with(None, [])

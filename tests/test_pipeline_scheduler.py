@@ -21,6 +21,7 @@ class PipelineCycleTests(unittest.TestCase):
                 "image-matching",
                 "metadata-extraction",
                 "metadata-matching",
+                "image-cleanup",
             ],
         )
         self.assertEqual(
@@ -30,11 +31,13 @@ class PipelineCycleTests(unittest.TestCase):
                 "matching_pipeline.image_matching",
                 "matching_pipeline.metadata_extraction",
                 "matching_pipeline.metadata_matching",
+                "matching_pipeline.image_cleanup",
             ],
         )
         self.assertTrue(
             all(step.cwd == scheduler._APP_ROOT for step in scheduler.PIPELINE_STEPS)
         )
+        self.assertEqual(scheduler.PIPELINE_STEPS[-1].command[-1], "--apply")
 
     def test_cycle_continues_after_failure(self) -> None:
         calls = []

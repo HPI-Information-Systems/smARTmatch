@@ -38,6 +38,24 @@ class PipelineRunTests(unittest.TestCase):
         write.assert_called_once_with(output, *rows)
         self.assertEqual(result, pipeline.BlockingInputCsvResult(output, 1, 1))
 
+    def test_processed_replay_csv_resets_db_state_before_snapshot(self) -> None:
+        rows = ([ImageFileRow("l", Path("l.jpg"))], [ImageFileRow("a", Path("a.jpg"))])
+        output = Path("output.csv")
+        with mock.patch.object(
+            pipeline, "_prepare_processed_image_replay"
+        ) as prepare, mock.patch.object(
+            pipeline, "load_db_image_file_rows", return_value=rows
+        ), mock.patch.object(
+            pipeline, "blocking_input_csv_path", return_value=output
+        ), mock.patch.object(
+            pipeline, "write_image_file_csv", return_value=output
+        ):
+            pipeline.create_blocking_input_csv(
+                include_processed_auction_images=True
+            )
+
+        prepare.assert_called_once_with()
+
     def test_run_skips_all_work_for_empty_db(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
@@ -56,6 +74,31 @@ class PipelineRunTests(unittest.TestCase):
             self.assertFalse(stale.exists())
             load.assert_not_called()
             write_artifact.assert_not_called()
+
+    def test_processed_image_replay_resets_state_under_storage_lock_before_loading(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            with patched_dirs(root, root / "candidates"), mock.patch.object(
+                pipeline, "env_image_root", return_value=root
+            ), mock.patch.object(
+                pipeline,
+                "reset_auction_image_matching_for_replay",
+                return_value=(7, 3),
+            ) as reset, mock.patch.object(
+                pipeline, "_load_inputs", return_value=([], [])
+            ) as load, mock.patch.object(
+                pipeline, "write_image_files_parquet"
+            ), mock.patch.object(
+                pipeline, "clear_candidate_parts"
+            ):
+                result = pipeline.run_image_blocking(
+                    include_processed_auction_images=True
+                )
+
+            reset.assert_called_once_with()
+            load.assert_called_once()
+            self.assertEqual(result.auction_image_count, 0)
+            self.assertTrue((root / ".smartmatch-image-storage.lock").is_file())
 
     def test_run_with_no_auction_writes_snapshots_and_clears_parts(self) -> None:
         lost = [ImageFileRow("l", Path("lost.jpg"))]

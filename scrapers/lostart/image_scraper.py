@@ -13,6 +13,7 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
+from shared.image_storage_lock import image_storage_lock
 from shared.logging_adapter import get_logger
 
 try:
@@ -268,6 +269,22 @@ def scrape_images(
     max_rows: Optional[int] = None,
     sleep: float = 0.25,
     verbose: bool = True,
+) -> int:
+    with image_storage_lock(ASSET_DIR, exclusive=False):
+        return _scrape_images_with_storage_locked(
+            start_row=start_row,
+            max_rows=max_rows,
+            sleep=sleep,
+            verbose=verbose,
+        )
+
+
+def _scrape_images_with_storage_locked(
+    *,
+    start_row: int,
+    max_rows: Optional[int],
+    sleep: float,
+    verbose: bool,
 ) -> int:
     start_row = max(start_row, 0)
     processed = 0

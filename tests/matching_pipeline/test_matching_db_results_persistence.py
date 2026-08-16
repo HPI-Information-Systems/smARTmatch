@@ -125,6 +125,7 @@ class DbHelperTests(unittest.TestCase):
         self.assertEqual(finalized.empty_auction_artwork_count, 3)
         sql, params = cursor.execute_calls[0]
         self.assertIn("UPDATE auction_artwork_image_file", sql)
+        self.assertIn("is_image_matching_completed_without_error = true", sql)
         self.assertIn("UPDATE auction_artwork", sql)
         self.assertEqual(params, ([10, 11],))
 

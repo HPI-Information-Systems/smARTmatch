@@ -14,6 +14,58 @@ from matching_pipeline.image_blocking.input_sources import ImageFileRow
 
 
 class InputSourceDatabaseTests(unittest.TestCase):
+    def test_processed_replay_reset_is_atomic_and_marks_links_pending(self) -> None:
+        class ReplayCursor:
+            def __init__(self) -> None:
+                self.executions = []
+                self.rowcount = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def execute(self, sql, params=None):
+                self.executions.append((str(sql), params))
+                self.rowcount = 5 if len(self.executions) == 1 else 2
+
+        class ReplayConnection:
+            def __init__(self) -> None:
+                self.cursor_instance = ReplayCursor()
+                self.commits = 0
+                self.rollbacks = 0
+                self.closes = 0
+
+            def cursor(self):
+                return self.cursor_instance
+
+            def commit(self):
+                self.commits += 1
+
+            def rollback(self):
+                self.rollbacks += 1
+
+            def close(self):
+                self.closes += 1
+
+        connection = ReplayConnection()
+        with mock.patch.object(input_sources, "connect_db", return_value=connection):
+            self.assertEqual(
+                input_sources.reset_auction_image_matching_for_replay(),
+                (5, 2),
+            )
+
+        sql = "\n".join(call[0] for call in connection.cursor_instance.executions)
+        self.assertIn("is_image_matching_processed = false", sql)
+        self.assertIn("is_image_matching_completed_without_error = false", sql)
+        self.assertIn("is_image_matching_processed_at = NULL", sql)
+        self.assertIn("image.cleaned_up_at IS NULL", sql)
+        self.assertIn("image.file_path IS NOT NULL", sql)
+        self.assertEqual(connection.commits, 1)
+        self.assertEqual(connection.rollbacks, 0)
+        self.assertEqual(connection.closes, 1)
+
     def test_db_presence_and_schema_checks(self) -> None:
         for value in (True, False):
             conn = Connection([Cursor(one=(value,))])
@@ -99,11 +151,18 @@ class InputSourceDatabaseTests(unittest.TestCase):
     def test_query_variants_and_invalid_role(self) -> None:
         lost = input_sources._db_query(LOST_ROLE, False)
         self.assertIn("lost_artwork_image_file", lost)
+        self.assertIn("img.cleaned_up_at IS NULL", lost)
+        self.assertIn("img.file_path IS NOT NULL", lost)
 
         unprocessed = input_sources._db_query(AUCTION_ROLE, False)
         processed = input_sources._db_query(AUCTION_ROLE, True)
         self.assertIn("is_image_matching_processed = false", unprocessed)
+        self.assertIn("is_image_matching_completed_without_error = false", unprocessed)
+        self.assertIn("FROM match_score score", unprocessed)
+        self.assertIn("img.cleaned_up_at IS NULL", unprocessed)
+        self.assertIn("img.file_path IS NOT NULL", unprocessed)
         self.assertNotIn("is_image_matching_processed = false", processed)
+        self.assertNotIn("is_image_matching_completed_without_error", processed)
 
         limited_unprocessed = input_sources._auction_image_file_query(
             False, use_auction_artwork_limit=True
@@ -112,7 +171,11 @@ class InputSourceDatabaseTests(unittest.TestCase):
             True, use_auction_artwork_limit=True
         )
         self.assertIn("WITH selected_auction_artwork", limited_unprocessed)
-        self.assertIn("AND aaif.is_image_matching_processed", limited_unprocessed)
+        self.assertIn("aaif.is_image_matching_processed = false", limited_unprocessed)
+        self.assertIn(
+            "aaif.is_image_matching_completed_without_error = false",
+            limited_unprocessed,
+        )
         self.assertNotIn("is_image_matching_processed", limited_processed)
 
         with self.assertRaisesRegex(ValueError, "Unsupported role"):

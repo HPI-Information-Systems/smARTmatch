@@ -148,7 +148,12 @@ LEFT JOIN pipeline_counts ON pipeline_counts.bucket = hours.bucket
 ORDER BY hours.bucket
 """
 
-IMAGE_FILE_PATHS_SQL = "SELECT file_path FROM image_file"
+IMAGE_FILE_PATHS_SQL = """
+SELECT file_path
+FROM image_file
+WHERE cleaned_up_at IS NULL
+  AND file_path IS NOT NULL
+"""
 
 DASHBOARD_COUNTS_SQL = """
 SELECT

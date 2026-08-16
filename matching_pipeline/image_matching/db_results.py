@@ -226,10 +226,14 @@ def _finalize_processed_auction_links(
             SELECT unnest(%s::int[]) AS image_file_id
         ), processed_links AS (
             UPDATE auction_artwork_image_file aaif
-            SET is_image_matching_processed = true
+            SET is_image_matching_processed = true,
+                is_image_matching_completed_without_error = true
             FROM input_ids
             WHERE aaif.image_file_id = input_ids.image_file_id
-              AND aaif.is_image_matching_processed = false
+              AND (
+                  aaif.is_image_matching_processed = false
+                  OR aaif.is_image_matching_completed_without_error = false
+              )
             RETURNING aaif.auction_artwork_id, aaif.image_file_id
         ), completed_artworks AS (
             UPDATE auction_artwork aa
@@ -245,7 +249,10 @@ def _finalize_processed_auction_links(
                       SELECT 1
                       FROM auction_artwork_image_file pending
                       WHERE pending.auction_artwork_id = aa.auction_artwork_id
-                        AND pending.is_image_matching_processed = false
+                        AND (
+                            pending.is_image_matching_processed = false
+                            OR pending.is_image_matching_completed_without_error = false
+                        )
                         AND NOT EXISTS (
                             SELECT 1
                             FROM input_ids

@@ -59,6 +59,15 @@ class CliTests(unittest.TestCase):
                 ["blocking", "--only-write-input-csv", "--input-csv", "x.csv"],
                 "cannot be used",
             ),
+            (
+                [
+                    "blocking",
+                    "--input-csv",
+                    "x.csv",
+                    "--include-processed-auction-images",
+                ],
+                "cannot be used",
+            ),
         ):
             with self.subTest(argv=argv), mock.patch.object(
                 sys, "argv", argv

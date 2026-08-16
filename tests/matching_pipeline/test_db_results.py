@@ -45,6 +45,7 @@ class DbResultSqlTests(unittest.TestCase):
 
         self.assertIn("UPDATE auction_artwork_image_file", cursor.sql)
         self.assertIn("SET is_image_matching_processed = true", cursor.sql)
+        self.assertIn("is_image_matching_completed_without_error = true", cursor.sql)
         self.assertNotIn("UPDATE image_file", cursor.sql)
         self.assertNotIn("img.is_image_matching_processed", cursor.sql)
         self.assertEqual(result.processed_auction_link_count, 2)

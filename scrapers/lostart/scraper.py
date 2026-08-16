@@ -13,6 +13,8 @@ from uuid import UUID
 import requests
 from bs4 import BeautifulSoup
 
+from shared.image_storage_lock import image_storage_lock
+
 from ..db_interface import Database, LostArtwork
 from ..utils.image_storage import resolve_images_dir, safe_image_prefix
 from ..utils.scraper import Scraper
@@ -91,6 +93,18 @@ class LostArtScraper(Scraper):
         self._apply_cookies_to_session(lostart_image_scraper.SESSION)
 
     def run(self, *, skip: int = 0, report_every: int = 10) -> None:
+        with image_storage_lock(self.images_dir, exclusive=False):
+            self._run_with_image_storage_locked(
+                skip=skip,
+                report_every=report_every,
+            )
+
+    def _run_with_image_storage_locked(
+        self,
+        *,
+        skip: int,
+        report_every: int,
+    ) -> None:
         if self.purge_before_run:
             with self.db:
                 self._purge_existing_data()

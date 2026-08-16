@@ -95,12 +95,11 @@ def run_image_matching(
         except Exception:
             failed_images += 1
             logger.exception(
-                "Auction image failed; skipping auction_file_id=%s path=%s candidates=%d",
+                "Auction image failed; leaving pending auction_file_id=%s path=%s candidates=%d",
                 auction_file_id,
                 auction_file_path,
                 len(item["match_candidates"]),
             )
-            processed_file_ids.append(auction_file_id)
             progress.maybe_log(
                 auctions_processed=len(processed_file_ids),
                 pairs_processed=pairs_processed,
@@ -110,6 +109,7 @@ def run_image_matching(
             )
             continue
 
+        auction_had_failed_pair = False
         for candidate in item["match_candidates"]:
             lost_file_id = candidate["lost_file_id"]
             lost_file_path = Path(candidate["lost_file_path"])
@@ -134,8 +134,9 @@ def run_image_matching(
                     )
             except Exception:
                 failed_pairs += 1
+                auction_had_failed_pair = True
                 logger.exception(
-                    "Pair failed; skipping auction_file_id=%s auction_path=%s lost_file_id=%s lost_path=%s",
+                    "Pair failed; leaving auction image pending auction_file_id=%s auction_path=%s lost_file_id=%s lost_path=%s",
                     auction_file_id,
                     auction_file_path,
                     lost_file_id,
@@ -163,7 +164,8 @@ def run_image_matching(
                     failed_images=failed_images,
                     failed_pairs=failed_pairs,
                 )
-        processed_file_ids.append(auction_file_id)
+        if not auction_had_failed_pair:
+            processed_file_ids.append(auction_file_id)
 
     logger.info("Found %d accepted matches", len(found_matches))
     _write_results(results_csv, found_matches)

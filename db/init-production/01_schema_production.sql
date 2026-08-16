@@ -86,8 +86,13 @@ CREATE TABLE IF NOT EXISTS literature_source (
 
 CREATE TABLE IF NOT EXISTS image_file (
     image_file_id serial PRIMARY KEY,
-    file_path text NOT NULL,
-    is_embedded boolean NOT NULL DEFAULT false
+    file_path text,
+    is_embedded boolean NOT NULL DEFAULT false,
+    cleaned_up_at timestamptz,
+    CONSTRAINT ck_image_file_cleanup_state CHECK (
+        (cleaned_up_at IS NULL AND file_path IS NOT NULL)
+        OR (cleaned_up_at IS NOT NULL AND file_path IS NULL)
+    )
 );
 
 CREATE TABLE IF NOT EXISTS lost_artwork (
@@ -205,6 +210,39 @@ CREATE TABLE IF NOT EXISTS auction_artwork (
 CREATE OR REPLACE FUNCTION set_auction_artwork_processed_timestamps()
 RETURNS trigger AS $$
 BEGIN
+    -- Any persisted matcher input change invalidates the previous metadata pass.
+    -- The row comparison also catches explicit transitions to NULL made outside
+    -- the shared scraper upsert helper.
+    IF ROW(
+        NEW.title,
+        NEW.artist_full_name,
+        NEW.width,
+        NEW.height,
+        NEW.dating_start,
+        NEW.dating_end,
+        NEW.dict_material_name,
+        NEW.dict_technique_name,
+        NEW.description
+    ) IS DISTINCT FROM ROW(
+        OLD.title,
+        OLD.artist_full_name,
+        OLD.width,
+        OLD.height,
+        OLD.dating_start,
+        OLD.dating_end,
+        OLD.dict_material_name,
+        OLD.dict_technique_name,
+        OLD.description
+    ) THEN
+        NEW.is_metadata_matching_processed = false;
+        NEW.is_metadata_matching_processed_at = NULL;
+    END IF;
+
+    IF NEW.description IS DISTINCT FROM OLD.description THEN
+        NEW.is_metadata_extraction_processed = false;
+        NEW.is_metadata_extraction_processed_at = NULL;
+    END IF;
+
     IF NEW.is_metadata_matching_processed = true
        AND OLD.is_metadata_matching_processed = false THEN
         NEW.is_metadata_matching_processed_at = now();
@@ -235,6 +273,7 @@ CREATE TABLE IF NOT EXISTS auction_artwork_image_file (
     auction_artwork_id uuid NOT NULL REFERENCES auction_artwork(auction_artwork_id) ON DELETE CASCADE,
     image_file_id integer NOT NULL REFERENCES image_file(image_file_id) ON DELETE CASCADE,
     is_image_matching_processed boolean NOT NULL DEFAULT false,
+    is_image_matching_completed_without_error boolean NOT NULL DEFAULT false,
     PRIMARY KEY (auction_artwork_id, image_file_id)
 );
 

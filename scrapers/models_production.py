@@ -123,6 +123,7 @@ class AuctionArtworkImageFile(Base):
     auction_artwork_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("auction_artwork.auction_artwork_id", ondelete="CASCADE"), primary_key=True)
     image_file_id: Mapped[int] = mapped_column(Integer, ForeignKey("image_file.image_file_id", ondelete="CASCADE"), primary_key=True)
     is_image_matching_processed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_image_matching_completed_without_error: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     auction_artwork: Mapped[Optional["AuctionArtwork"]] = relationship("AuctionArtwork", foreign_keys=[auction_artwork_id])
     image_file: Mapped[Optional["ImageFile"]] = relationship("ImageFile", foreign_keys=[image_file_id])
@@ -218,8 +219,9 @@ class ImageFile(Base):
     __tablename__ = "image_file"
 
     image_file_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    file_path: Mapped[Optional[str]] = mapped_column(Text)
     is_embedded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    cleaned_up_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
 
     auction_artwork_image_files: Mapped[List["AuctionArtworkImageFile"]] = relationship("AuctionArtworkImageFile", overlaps="image_file")
     lost_artwork_image_files: Mapped[List["LostArtworkImageFile"]] = relationship("LostArtworkImageFile", overlaps="image_file")

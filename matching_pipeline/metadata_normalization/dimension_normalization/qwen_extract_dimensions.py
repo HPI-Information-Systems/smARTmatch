@@ -218,6 +218,8 @@ def _run_vllm(
     model_name: str,
     quantization: Optional[str],
     device: str,
+    gpu_memory_utilization: float,
+    max_num_seqs: int,
     max_new_tokens: int,
 ) -> list[str]:
     from transformers import AutoTokenizer
@@ -227,7 +229,8 @@ def _run_vllm(
         model=model_name,
         quantization=quantization,
         device=device,
-        gpu_memory_utilization=0.65,
+        gpu_memory_utilization=gpu_memory_utilization,
+        max_num_seqs=max_num_seqs,
         max_model_len=4096,
         trust_remote_code=True,
     )
@@ -325,10 +328,24 @@ def normalize_with_qwen(
             f"Backend: {backend}  Model: {model_name}  "
             f"Quantization: {quant or 'none'}  Device: {device_name}"
         )
+        if backend == "vllm":
+            logger.info(
+                "vLLM GPU memory utilization: %.2f  Max sequences: %d",
+                config.gpu_memory_utilization,
+                config.max_num_seqs,
+            )
 
         t0 = time.perf_counter()
         raw_outputs = (
-            _run_vllm(to_process, model_name, quant, device_name, max_new_tokens)
+            _run_vllm(
+                to_process,
+                model_name,
+                quant,
+                device_name,
+                config.gpu_memory_utilization,
+                config.max_num_seqs,
+                max_new_tokens,
+            )
             if backend == "vllm"
             else _run_transformers(to_process, model_name, max_new_tokens)
         )

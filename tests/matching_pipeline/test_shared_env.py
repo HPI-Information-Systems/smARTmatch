@@ -40,6 +40,15 @@ class EnvironmentTests(TemporaryPipelineTest):
         with self.assertRaisesRegex(ValueError, "VALUE must be an integer"):
             env.env_int("VALUE")
 
+        os.environ.pop("VALUE", None)
+        self.assertIsNone(env.env_float("VALUE"))
+        self.assertEqual(env.env_float("VALUE", 0.5), 0.5)
+        os.environ["VALUE"] = " 0.55 "
+        self.assertEqual(env.env_float("VALUE"), 0.55)
+        os.environ["VALUE"] = "not-a-number"
+        with self.assertRaisesRegex(ValueError, "VALUE must be a number"):
+            env.env_float("VALUE")
+
     def test_positive_integer_and_path_helpers(self) -> None:
         os.environ.pop("VALUE", None)
         self.assertEqual(env.env_positive_int("VALUE", 3), 3)
@@ -96,6 +105,29 @@ class EnvironmentTests(TemporaryPipelineTest):
         self.assertFalse(env.env_non_gpu_inference_allowed())
         os.environ["ALLOW_NON_GPU_INFERENCE"] = "yes"
         self.assertTrue(env.env_non_gpu_inference_allowed())
+
+    def test_metadata_model_runtime_defaults_and_validation(self) -> None:
+        config = env.get_model_config()
+        self.assertEqual(config.backend, "vllm")
+        self.assertEqual(config.gpu_memory_utilization, 0.55)
+        self.assertEqual(config.max_num_seqs, 4)
+
+        os.environ["METADATA_GPU_MEMORY_UTILIZATION"] = "0.6"
+        os.environ["METADATA_MAX_NUM_SEQS"] = "7"
+        config = env.get_model_config()
+        self.assertEqual(config.gpu_memory_utilization, 0.6)
+        self.assertEqual(config.max_num_seqs, 7)
+
+        for value in ("0", "-0.1", "1.1", "nan"):
+            os.environ["METADATA_GPU_MEMORY_UTILIZATION"] = value
+            with self.subTest(gpu_memory_utilization=value):
+                with self.assertRaisesRegex(ValueError, "greater than 0"):
+                    env.get_model_config()
+
+        os.environ["METADATA_GPU_MEMORY_UTILIZATION"] = "0.55"
+        os.environ["METADATA_MAX_NUM_SEQS"] = "0"
+        with self.assertRaisesRegex(ValueError, "positive integer"):
+            env.get_model_config()
 
     def test_image_root_is_required(self) -> None:
         os.environ.pop("SMARTMATCH_IMAGES_DIR")

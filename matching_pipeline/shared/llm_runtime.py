@@ -94,6 +94,7 @@ def create_vllm(
     quantization: str | None,
     device: str,
     gpu_memory_utilization: float,
+    max_num_seqs: int,
     max_model_len: int,
     trust_remote_code: bool,
 ) -> Any:
@@ -104,6 +105,7 @@ def create_vllm(
         "model": model,
         "quantization": quantization,
         "gpu_memory_utilization": gpu_memory_utilization,
+        "max_num_seqs": max_num_seqs,
         "max_model_len": max_model_len,
         "trust_remote_code": trust_remote_code,
     }

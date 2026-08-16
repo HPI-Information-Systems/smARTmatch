@@ -46,6 +46,16 @@ def env_int(name: str, default: int | None = None) -> int | None:
         raise ValueError(f"Environment variable {name} must be an integer") from exc
 
 
+def env_float(name: str, default: float | None = None) -> float | None:
+    value = env_str(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ValueError(f"Environment variable {name} must be a number") from exc
+
+
 def env_positive_int(name: str, default: int) -> int:
     value = env_int(name, default)
     assert value is not None
@@ -98,6 +108,8 @@ def env_non_gpu_inference_allowed() -> bool:
 
 DEFAULT_VLLM_MODEL = "Qwen/Qwen2.5-7B-Instruct-AWQ"
 DEFAULT_TRANSFORMERS_MODEL = "LiquidAI/LFM2-700M"
+DEFAULT_METADATA_GPU_MEMORY_UTILIZATION = 0.55
+DEFAULT_METADATA_MAX_NUM_SEQS = 4
 SUPPORTED_METADATA_BACKENDS = {"vllm", "transformers"}
 
 
@@ -107,6 +119,8 @@ class MetadataModelConfig:
     model: str
     quantization: str | None
     device: str
+    gpu_memory_utilization: float
+    max_num_seqs: int
 
 
 def get_model_config() -> MetadataModelConfig:
@@ -125,13 +139,28 @@ def get_model_config() -> MetadataModelConfig:
         "METADATA_QUANTIZATION", "awq_marlin" if is_vllm else ""
     ).strip()
     device = os.getenv("METADATA_DEVICE", "cuda" if is_vllm else "cpu").strip().lower()
+    gpu_memory_utilization = env_float(
+        "METADATA_GPU_MEMORY_UTILIZATION",
+        DEFAULT_METADATA_GPU_MEMORY_UTILIZATION,
+    )
+    assert gpu_memory_utilization is not None
+    max_num_seqs = env_positive_int(
+        "METADATA_MAX_NUM_SEQS", DEFAULT_METADATA_MAX_NUM_SEQS
+    )
     if not model:
         raise ValueError("METADATA_MODEL must not be empty")
     if not device:
         raise ValueError("METADATA_DEVICE must not be empty")
+    if not 0 < gpu_memory_utilization <= 1:
+        raise ValueError(
+            "Environment variable METADATA_GPU_MEMORY_UTILIZATION must be "
+            "greater than 0 and at most 1"
+        )
     return MetadataModelConfig(
         backend=backend,
         model=model,
         quantization=quantization or None,
         device=device,
+        gpu_memory_utilization=gpu_memory_utilization,
+        max_num_seqs=max_num_seqs,
     )

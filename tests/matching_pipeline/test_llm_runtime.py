@@ -47,13 +47,16 @@ class LlmRuntimeTest(unittest.TestCase):
                 model="model",
                 quantization="awq",
                 device="cuda",
-                gpu_memory_utilization=0.85,
+                gpu_memory_utilization=0.55,
+                max_num_seqs=4,
                 max_model_len=4096,
                 trust_remote_code=True,
             )
 
         self.assertEqual(len(calls), 1)
         self.assertNotIn("device", calls[0])
+        self.assertEqual(calls[0]["gpu_memory_utilization"], 0.55)
+        self.assertEqual(calls[0]["max_num_seqs"], 4)
 
     def test_create_vllm_passes_device_when_supported(self) -> None:
         modules, calls = self._fake_vllm_modules(accepts_device=True)
@@ -62,7 +65,8 @@ class LlmRuntimeTest(unittest.TestCase):
                 model="model",
                 quantization=None,
                 device="cpu",
-                gpu_memory_utilization=0.85,
+                gpu_memory_utilization=0.55,
+                max_num_seqs=4,
                 max_model_len=4096,
                 trust_remote_code=True,
             )
@@ -77,7 +81,8 @@ class LlmRuntimeTest(unittest.TestCase):
                     model="model",
                     quantization=None,
                     device="cpu",
-                    gpu_memory_utilization=0.85,
+                    gpu_memory_utilization=0.55,
+                    max_num_seqs=4,
                     max_model_len=4096,
                     trust_remote_code=True,
                 )

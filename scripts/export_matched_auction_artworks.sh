@@ -18,18 +18,12 @@ usage() {
 Usage: ./scripts/export_matched_auction_artworks.sh
 
 Environment:
-  ENV_FILE             Direct-mode env file (default: ./.env.docker)
-  DB_MODE              compose or direct (default: compose)
   DB_SERVICE           Docker Compose database service (default: db)
-  PSQL_BIN             psql executable for direct mode (default: psql)
   TRANSFER_DIR         Output directory (default: ./transfer)
   DB_IMAGE_ROOT        Image root used inside the source deployment
                        (default: SMARTMATCH_IMAGES_DIR or /app/db/images)
   TRANSFER_IMAGE_PREFIX Canonical repo-relative image prefix stored in the dump
                        (default: db/images)
-
-Direct mode also uses POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB,
-POSTGRES_USER, and POSTGRES_PASSWORD.
 
 Outputs:
   transfer/auction_artworks.sql
@@ -54,10 +48,7 @@ fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 [[ "$(pwd -P)" == "$ROOT_DIR" ]] || fail "run this script from the repository root: $ROOT_DIR"
 
-ENV_FILE="${ENV_FILE:-$ROOT_DIR/.env.docker}"
-DB_MODE="${DB_MODE:-compose}"
 DB_SERVICE="${DB_SERVICE:-db}"
-PSQL_BIN="${PSQL_BIN:-psql}"
 TRANSFER_DIR="${TRANSFER_DIR:-$ROOT_DIR/transfer}"
 DB_IMAGE_ROOT="${DB_IMAGE_ROOT:-${SMARTMATCH_IMAGES_DIR:-/app/db/images}}"
 TRANSFER_IMAGE_PREFIX="${TRANSFER_IMAGE_PREFIX:-db/images}"
@@ -66,6 +57,7 @@ TRANSFER_IMAGE_PREFIX="${TRANSFER_IMAGE_PREFIX#./}"
 TRANSFER_IMAGE_PREFIX="${TRANSFER_IMAGE_PREFIX%/}"
 
 command -v python3 >/dev/null 2>&1 || fail "python3 is required"
+command -v docker >/dev/null 2>&1 || fail "docker is required"
 [[ -n "$DB_IMAGE_ROOT" ]] || fail "DB_IMAGE_ROOT must not be empty"
 [[ -n "$TRANSFER_IMAGE_PREFIX" ]] || fail "TRANSFER_IMAGE_PREFIX must not be empty"
 [[ "$TRANSFER_IMAGE_PREFIX" != /* ]] || fail "TRANSFER_IMAGE_PREFIX must be repo-relative"
@@ -73,46 +65,17 @@ command -v python3 >/dev/null 2>&1 || fail "python3 is required"
 [[ "$TRANSFER_IMAGE_PREFIX" != *$'\n'* && "$TRANSFER_IMAGE_PREFIX" != *$'\r'* ]] || \
     fail "TRANSFER_IMAGE_PREFIX must not contain newlines"
 
-case "$DB_MODE" in
-    compose)
-        command -v docker >/dev/null 2>&1 || fail "docker is required for DB_MODE=compose"
-        database_label="Docker Compose service $DB_SERVICE"
-        ;;
-    direct)
-        if [[ -f "$ENV_FILE" ]]; then
-            set -a
-            # Direct-mode env files in this repository use shell-compatible KEY=VALUE syntax.
-            # shellcheck disable=SC1090
-            source "$ENV_FILE"
-            set +a
-        fi
-        command -v "$PSQL_BIN" >/dev/null 2>&1 || fail "$PSQL_BIN is required for DB_MODE=direct"
-        : "${POSTGRES_HOST:?POSTGRES_HOST must be set for DB_MODE=direct}"
-        : "${POSTGRES_PORT:?POSTGRES_PORT must be set for DB_MODE=direct}"
-        : "${POSTGRES_DB:?POSTGRES_DB must be set for DB_MODE=direct}"
-        : "${POSTGRES_USER:?POSTGRES_USER must be set for DB_MODE=direct}"
-        : "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set for DB_MODE=direct}"
-        database_label="$POSTGRES_DB@$POSTGRES_HOST:$POSTGRES_PORT"
-        ;;
-    *) fail "DB_MODE must be 'compose' or 'direct'" ;;
-esac
+database_label="Docker Compose service $DB_SERVICE"
 
 run_psql() {
-    if [[ "$DB_MODE" == "compose" ]]; then
-        docker compose exec -T "$DB_SERVICE" sh -c '
-            : "${POSTGRES_USER:?POSTGRES_USER is missing in the database container}"
-            : "${POSTGRES_DB:?POSTGRES_DB is missing in the database container}"
-            : "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is missing in the database container}"
-            export PGPASSWORD="$POSTGRES_PASSWORD"
-            exec psql -X -qAt -v ON_ERROR_STOP=1 \
-                -U "$POSTGRES_USER" -d "$POSTGRES_DB" "$@"
-        ' sh "$@"
-    else
-        PGPASSWORD="$POSTGRES_PASSWORD" "$PSQL_BIN" \
-            -X -qAt -v ON_ERROR_STOP=1 \
-            -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
+    docker compose exec -T "$DB_SERVICE" sh -c '
+        : "${POSTGRES_USER:?POSTGRES_USER is missing in the database container}"
+        : "${POSTGRES_DB:?POSTGRES_DB is missing in the database container}"
+        : "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is missing in the database container}"
+        export PGPASSWORD="$POSTGRES_PASSWORD"
+        exec psql -X -qAt -v ON_ERROR_STOP=1 \
             -U "$POSTGRES_USER" -d "$POSTGRES_DB" "$@"
-    fi
+    ' sh "$@"
 }
 
 mkdir -p "$TRANSFER_DIR"

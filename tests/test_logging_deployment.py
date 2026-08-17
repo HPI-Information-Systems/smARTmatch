@@ -45,7 +45,7 @@ class LoggingDeploymentTests(unittest.TestCase):
 
     def test_docker_environment_exposes_only_unified_log_controls(self) -> None:
         environment = (_ROOT / ".env.docker").read_text()
-        self.assertIn("SMARTMATCH_LOG_LEVEL=ERROR", environment)
+        self.assertIn("SMARTMATCH_LOG_LEVEL=ALL", environment)
         self.assertIn("SMARTMATCH_LOG_RETENTION_DAYS=30", environment)
         self.assertIn("SMARTMATCH_LOG_DIR=/app/logs", environment)
         self.assertNotIn("METADATA_MATCHER_LOG_LEVEL", environment)

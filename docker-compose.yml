@@ -1,12 +1,10 @@
 services:
   db:
-    image: postgres:16.6
+    image: postgres:16.15
     restart: unless-stopped
     shm_size: "1gb"
     env_file:
       - ${SMARTMATCH_ENV_FILE:-./.env.docker}
-    ports:
-      - "5434:5432"
     volumes:
       - smartmatch_pgdata:/var/lib/postgresql/data
       - ./db/init-production:/docker-entrypoint-initdb.d:ro

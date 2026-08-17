@@ -28,14 +28,16 @@ class ExportMatchedAuctionArtworksTests(unittest.TestCase):
         )
         self.assertIn("transfer/auction_artworks.sql", result.stdout)
         self.assertIn("transfer/rsync-files.txt", result.stdout)
+        self.assertNotIn("DB_MODE", result.stdout)
+        self.assertNotIn("PSQL_BIN", result.stdout)
 
     def test_fake_export_publishes_sql_and_repo_relative_image_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
-            fake_psql = self._fake_psql(temp, TRACKED_IMAGE)
+            fake_docker = self._fake_docker(temp, TRACKED_IMAGE)
             transfer_dir = temp / "transfer"
 
-            result = self._run_export(fake_psql, transfer_dir)
+            result = self._run_export(fake_docker, transfer_dir)
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(
@@ -50,7 +52,7 @@ class ExportMatchedAuctionArtworksTests(unittest.TestCase):
     def test_missing_image_does_not_replace_existing_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
-            fake_psql = self._fake_psql(temp, "db/images/not-present.jpg")
+            fake_docker = self._fake_docker(temp, "db/images/not-present.jpg")
             transfer_dir = temp / "transfer"
             transfer_dir.mkdir()
             sql_path = transfer_dir / "auction_artworks.sql"
@@ -58,7 +60,7 @@ class ExportMatchedAuctionArtworksTests(unittest.TestCase):
             sql_path.write_text("old sql\n")
             rsync_path.write_text("old manifest\n")
 
-            result = self._run_export(fake_psql, transfer_dir)
+            result = self._run_export(fake_docker, transfer_dir)
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Missing 1 selected image file", result.stderr)
@@ -72,6 +74,9 @@ class ExportMatchedAuctionArtworksTests(unittest.TestCase):
         self.assertNotIn("COPY _transfer_match_score", source)
         self.assertNotIn("INSERT INTO match_score", source)
         self.assertNotIn("DELETE FROM match_score", source)
+        self.assertNotIn("DB_MODE", source)
+        self.assertNotIn("PSQL_BIN", source)
+        self.assertIn('docker compose exec -T "$DB_SERVICE"', source)
         self.assertIn("false, NULL::timestamptz", source)
         self.assertNotIn("FORMAT csv", source)
         self.assertIn(
@@ -132,18 +137,14 @@ class ExportMatchedAuctionArtworksTests(unittest.TestCase):
             source,
         )
 
-    def _run_export(self, fake_psql: Path, transfer_dir: Path) -> subprocess.CompletedProcess[str]:
+    def _run_export(
+        self, fake_docker: Path, transfer_dir: Path
+    ) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env.update(
             {
-                "DB_MODE": "direct",
-                "ENV_FILE": str(transfer_dir / "missing.env"),
-                "PSQL_BIN": str(fake_psql),
-                "POSTGRES_HOST": "source-db",
-                "POSTGRES_PORT": "5432",
-                "POSTGRES_DB": "smartmatch",
-                "POSTGRES_USER": "smartmatch",
-                "POSTGRES_PASSWORD": "test-only",
+                "DB_SERVICE": "test-db",
+                "PATH": f"{fake_docker.parent}{os.pathsep}{env.get('PATH', '')}",
                 "TRANSFER_DIR": str(transfer_dir),
             }
         )
@@ -156,10 +157,11 @@ class ExportMatchedAuctionArtworksTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _fake_psql(temp: Path, image_path: str) -> Path:
-        fake = temp / "fake-psql"
+    def _fake_docker(temp: Path, image_path: str) -> Path:
+        fake = temp / "docker"
         fake.write_text(
             "#!/usr/bin/env bash\n"
+            "[[ \"$1\" == compose && \"$2\" == exec ]] || exit 2\n"
             "printf '%s\\n' 'BEGIN;' 'COMMIT;' "
             f"'{BEGIN_MARKER}' '{image_path.encode().hex()}' '{END_MARKER}'\n"
         )

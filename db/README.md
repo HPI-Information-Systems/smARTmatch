@@ -1,6 +1,6 @@
 # Database operations
 
-PostgreSQL 16 is the authoritative store for source records, pipeline state, scores, and reviews. Root Compose exposes it as service `db` on host port `5434` and stores data in the named volume `smartmatch_pgdata`.
+PostgreSQL 16 is the authoritative store for source records, pipeline state, scores, and reviews. Root Compose exposes it only to other Compose services as `db:5432` and stores data in the named volume `smartmatch_pgdata`.
 
 ## Setup
 
@@ -94,7 +94,7 @@ docker compose exec -T db sh -lc \
 docker system df -v
 ```
 
-Monitor volume capacity, connection failures, long-running queries, and backup success. Restrict host port `5434`; it is published by the development Compose file. Keep credentials out of Git and rotate them with PostgreSQL role commands, not by editing environment values alone.
+Monitor volume capacity, connection failures, long-running queries, and backup success. PostgreSQL has no published host port; perform administration through `docker compose exec db`. Keep credentials out of Git and rotate them with PostgreSQL role commands, not by editing environment values alone.
 
 `docker compose restart db` is normally safe. `docker compose down` keeps the volume; **`docker compose down -v` permanently removes it**.
 

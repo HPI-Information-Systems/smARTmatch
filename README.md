@@ -74,7 +74,6 @@ Interfaces:
 
 - Review frontend: <http://localhost/>
 - Scraper dashboard: <http://localhost:5555/>
-- PostgreSQL: `localhost:5434`
 
 Follow matching logs with:
 
@@ -92,7 +91,7 @@ continue to reach Docker stdout/stderr and are also persisted on the host in
 Configure the policy in the selected Docker environment file:
 
 ```dotenv
-SMARTMATCH_LOG_LEVEL=ERROR          # ALL or ERROR
+SMARTMATCH_LOG_LEVEL=ALL            # ALL or ERROR
 SMARTMATCH_LOG_RETENTION_DAYS=30
 SMARTMATCH_LOG_DIR=/app/logs
 ```
@@ -183,6 +182,8 @@ python -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
+
+The root file is for local development and offline tests; container builds do not install it. Each Python service installs its dedicated runtime manifest: `scrapers/requirements.txt`, `frontend/requirements.txt`, or `matching_pipeline/requirements.txt`.
 
 For local matching runtime dependencies, also install the combined lock and pinned LightGlue revision used by the Docker image:
 

@@ -16,17 +16,84 @@ class PipelineDeploymentTests(unittest.TestCase):
         compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text())
         services = compose["services"]
         self.assertEqual(
-            set(services), {"db", "scrapers", "matching_pipeline", "frontend"}
+            set(services),
+            {"db", "scrapers", "matching_pipeline", "frontend"},
         )
         service = services["matching_pipeline"]
-        self.assertEqual(
-            service["build"]["dockerfile"], "matching_pipeline/Dockerfile"
-        )
+        self.assertEqual(service["build"]["dockerfile"], "matching_pipeline/Dockerfile")
         self.assertEqual(service["stop_grace_period"], "160s")
         self.assertEqual(service["gpus"], "all")
         self.assertEqual(
             [path.name for path in _ROOT.glob("docker-compose*.yml")],
             ["docker-compose.yml"],
+        )
+
+    def test_database_is_internal_only(self) -> None:
+        compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text())
+        database = compose["services"]["db"]
+
+        self.assertEqual(database["image"], "postgres:16.15")
+        self.assertNotIn("ports", database)
+
+    def test_frontend_uses_baked_code_and_read_only_data_mounts(self) -> None:
+        compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text())
+        frontend = compose["services"]["frontend"]
+
+        self.assertEqual(frontend["environment"]["SMARTMATCH_PROJECT_DIR"], "/project")
+        self.assertEqual(
+            frontend["volumes"],
+            [
+                {
+                    "type": "bind",
+                    "source": ".",
+                    "target": "/project",
+                    "read_only": True,
+                    "bind": {"create_host_path": False},
+                },
+                "./db/images:/app/db/images:ro",
+                "./cache:/app/cache:ro",
+                "./logs:/app/logs",
+            ],
+        )
+        dockerfile = (_ROOT / "frontend" / "Dockerfile").read_text()
+        self.assertIn("COPY frontend /app/frontend", dockerfile)
+
+    def test_python_images_install_component_runtime_requirements(self) -> None:
+        dockerfile_copies = {
+            "scrapers": "COPY scrapers/requirements.txt /tmp/requirements.txt",
+            "frontend": "COPY frontend/requirements.txt /tmp/requirements.txt",
+            "matching_pipeline": (
+                "COPY matching_pipeline/requirements.txt /tmp/requirements.txt"
+            ),
+        }
+        for component, copy_instruction in dockerfile_copies.items():
+            dockerfile = (_ROOT / component / "Dockerfile").read_text()
+            with self.subTest(component=component):
+                self.assertIn(copy_instruction, dockerfile)
+
+        self.assertEqual(
+            _requirement_lines(_ROOT / "frontend" / "requirements.txt"),
+            [
+                "flask==3.1.0",
+                "psycopg[binary]==3.2.2",
+                "sqlalchemy==2.0.36",
+                "waitress==3.0.2",
+            ],
+        )
+        self.assertEqual(
+            _requirement_lines(_ROOT / "scrapers" / "requirements.txt"),
+            [
+                "beautifulsoup4==4.14.2",
+                "flask==3.1.0",
+                "lxml==6.0.2",
+                "pillow==12.3.0",
+                "playwright==1.62.0",
+                "psycopg[binary]==3.2.2",
+                "requests==2.32.5",
+                "sqlalchemy==2.0.36",
+                "waitress==3.0.2",
+                "werkzeug==3.1.8",
+            ],
         )
 
     def test_compose_environment_file_is_overridable_and_secret_free(self) -> None:
@@ -42,7 +109,7 @@ class PipelineDeploymentTests(unittest.TestCase):
         self.assertIn("METADATA_DEVICE=cuda", development_env)
         self.assertIn("METADATA_GPU_MEMORY_UTILIZATION=0.55", development_env)
         self.assertIn("METADATA_MAX_NUM_SEQS=4", development_env)
-        self.assertIn("SMARTMATCH_LOG_LEVEL=ERROR", development_env)
+        self.assertIn("SMARTMATCH_LOG_LEVEL=ALL", development_env)
         self.assertIn("SMARTMATCH_LOG_RETENTION_DAYS=30", development_env)
 
     def test_pipeline_dockerfile_pins_base_and_lightglue(self) -> None:

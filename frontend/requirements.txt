@@ -1,0 +1,5 @@
+# Runtime dependencies for the review frontend.
+flask==3.1.0
+psycopg[binary]==3.2.2
+sqlalchemy==2.0.36
+waitress==3.0.2

@@ -20,7 +20,7 @@ RUN apt-get update \
 
 # Build-time only: keep pip's scratch dir scoped to this RUN so it can't leak
 # into runtime (Playwright otherwise tries to mkdtemp inside a deleted path).
-COPY requirements.txt /tmp/requirements.txt
+COPY scrapers/requirements.txt /tmp/requirements.txt
 RUN PIP_TMPDIR=/var/tmp/pip-tmp \
     && mkdir -p "$PIP_TMPDIR" \
     && TMPDIR="$PIP_TMPDIR" python -m pip install --no-cache-dir --upgrade "pip==25.0.1" setuptools wheel \

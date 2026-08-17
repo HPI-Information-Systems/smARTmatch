@@ -14,7 +14,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 WORKDIR /app
 
-COPY requirements.txt /tmp/requirements.txt
+COPY frontend/requirements.txt /tmp/requirements.txt
 RUN mkdir -p "$TMPDIR" \
     && python -m pip install --no-cache-dir --upgrade "pip==25.0.1" setuptools wheel \
     && for attempt in 1 2 3; do \

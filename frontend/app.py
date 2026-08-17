@@ -2,16 +2,18 @@ import json
 import math
 import os
 import re
+import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
-from flask import Flask, abort
+from flask import Flask, abort, g, has_app_context
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
 from sqlalchemy.exc import DataError
-from sqlalchemy.orm import joinedload, sessionmaker
+from sqlalchemy.orm import joinedload, scoped_session, sessionmaker
 
 from scrapers.models_production import (
     AuctionArtwork,
@@ -88,7 +90,26 @@ DB_URL = _database_url()
 
 engine = create_engine(DB_URL, pool_pre_ping=True)
 Session = sessionmaker(bind=engine)
-session = Session()
+
+
+def _session_scope():
+    if has_app_context():
+        return id(g._get_current_object())
+    return threading.get_ident()
+
+
+session = scoped_session(Session, scopefunc=_session_scope)
+
+
+@app.teardown_appcontext
+def _remove_db_session(_exception=None):
+    if not session.registry.has():
+        return
+    try:
+        session.rollback()
+    finally:
+        session.remove()
+
 
 DEFAULT_IMAGE_WEIGHT = 50
 
@@ -252,6 +273,19 @@ def normalize_source_filter(value):
     return normalized[:255] or SOURCE_FILTER_ALL
 
 
+def safe_source_url(value):
+    source_url = str(value or "").strip()
+    if not source_url:
+        return None
+    try:
+        parsed = urlsplit(source_url)
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return None
+    return source_url
+
+
 app.jinja_env.globals.update(
     score_percent=score_percent,
     score_percent_short=score_percent_short,
@@ -260,6 +294,7 @@ app.jinja_env.globals.update(
     dimensions_label=dimensions_label,
     auction_artist_label=auction_artist_label,
     metadata_weight=metadata_weight,
+    safe_source_url=safe_source_url,
 )
 
 
@@ -568,7 +603,7 @@ def get_top_unlabeled_auction_previews(limit=21):
     if preview_limit < 1:
         return []
 
-    preview_sql = """
+    preview_sql = f"""
     WITH scored AS (
         SELECT
             ms.lost_id::text || ':' || ms.auction_id::text AS match_id,
@@ -593,7 +628,8 @@ def get_top_unlabeled_auction_previews(limit=21):
             END AS match_date
         FROM match_score ms
         JOIN auction_artwork aa ON aa.auction_artwork_id = ms.auction_id
-        WHERE COALESCE(ms.rating, 0) = 0
+        WHERE {match_sql.VISIBLE_MATCH_SQL}
+          AND COALESCE(ms.rating, 0) = 0
           AND COALESCE(ms.bookmarked, false) IS FALSE
           AND EXISTS (
               SELECT 1
@@ -773,29 +809,66 @@ def get_next_match_to_label(
     )
 
 
+_DB_FILE_ROOT_SETTINGS = (
+    ("SMARTMATCH_IMAGES_DIR", "db/images"),
+    ("CACHE_DIR", "cache"),
+)
+
+
+def _approved_db_file_roots():
+    roots = []
+    for env_name, default in _DB_FILE_ROOT_SETTINGS:
+        configured = os.getenv(env_name)
+        raw_root = configured.strip() if configured and configured.strip() else default
+        try:
+            root = Path(raw_root).expanduser()
+            if not root.is_absolute():
+                root = Path.cwd() / root
+            resolved = root.resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if resolved not in roots:
+            roots.append(resolved)
+    return tuple(roots)
+
+
 def _existing_file_path(path):
     raw_path = str(path or "").strip()
     if not raw_path:
         abort(404)
 
-    path_obj = Path(raw_path).expanduser()
-    image_root = Path(os.getenv("SMARTMATCH_IMAGES_DIR", "db/images")).expanduser()
-    if not image_root.is_absolute():
-        image_root = Path.cwd() / image_root
+    try:
+        path_obj = Path(raw_path).expanduser()
+    except (OSError, RuntimeError, ValueError):
+        abort(404)
 
+    approved_roots = _approved_db_file_roots()
     candidates = (
         [path_obj]
         if path_obj.is_absolute()
-        else [Path.cwd() / path_obj, image_root / path_obj]
+        else [
+            Path.cwd() / path_obj,
+            *(root / path_obj for root in approved_roots),
+        ]
     )
     seen = set()
     for candidate in candidates:
-        resolved = candidate.resolve()
+        try:
+            resolved = candidate.resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
         if resolved in seen:
             continue
         seen.add(resolved)
-        if resolved.is_file():
-            return str(resolved)
+        if not any(
+            resolved == root or root in resolved.parents for root in approved_roots
+        ):
+            continue
+        try:
+            if resolved.is_file():
+                return str(resolved)
+        except (OSError, ValueError):
+            continue
     abort(404)
 
 
@@ -877,15 +950,11 @@ def get_keypoint_plot_path(match_id):
 
 
 def main():
+    from waitress import serve
+
     host = os.getenv("FRONTEND_HOST", "0.0.0.0")
     port = _env_int("FRONTEND_PORT", 80)
-    debug = os.getenv("FRONTEND_DEBUG", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    app.run(host=host, port=port, debug=debug)
+    serve(app, host=host, port=port)
 
 
 def _register_routes():

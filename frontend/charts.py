@@ -67,7 +67,13 @@ def make_line_chart(labels, series, time_labels=None):
     for item in series:
         values = [int(value or 0) for value in item["values"]]
         values = (values + [0] * point_count)[:point_count]
-        normalized.append({**item, "values": values})
+        projected_value = item.get("projected_value")
+        if projected_value is not None and point_count > 0:
+            projected_value = int(round(float(projected_value)))
+            all_values.append(projected_value)
+        normalized.append(
+            {**item, "values": values, "projected_value": projected_value}
+        )
         all_values.extend(values)
 
     max_value = _nice_max(max(all_values, default=0))
@@ -93,25 +99,51 @@ def make_line_chart(labels, series, time_labels=None):
     chart_series = []
     for item in normalized:
         data = []
-        point_strings = []
-        for index, value in enumerate(item["values"]):
+        projection_index = (
+            point_count - 1 if item["projected_value"] is not None else None
+        )
+        for index, actual_value in enumerate(item["values"]):
+            is_projection = index == projection_index
+            value = item["projected_value"] if is_projection else actual_value
             x, y = _point(index, point_count, value, max_value)
+            value_label = str(value)
+            if is_projection:
+                value_label = f"{value} (Hochrechnung; bisher {actual_value})"
             data.append(
                 {
                     "x": x,
                     "y": y,
                     "label": labels[index],
                     "value": value,
+                    "value_label": value_label,
+                    "is_projection": is_projection,
                     **_time_meta(time_labels, index),
                 }
             )
-            point_strings.append(f"{x},{y}")
+
+        solid_data = data if projection_index is None else data[:projection_index]
+        point_strings = [f'{point["x"]},{point["y"]}' for point in solid_data]
+        projection_data = []
+        if projection_index is not None:
+            projection_data = data[max(0, projection_index - 1) : projection_index + 1]
+        projection_points = " ".join(
+            f'{point["x"]},{point["y"]}' for point in projection_data
+        )
+
         area_points = ""
         if point_strings:
-            first_x = data[0]["x"]
-            last_x = data[-1]["x"]
+            first_x = solid_data[0]["x"]
+            last_x = solid_data[-1]["x"]
             area_points = f"{first_x},{PLOT_BOTTOM} {' '.join(point_strings)} {last_x},{PLOT_BOTTOM}"
-        chart_series.append({**item, "data": data, "points": " ".join(point_strings), "area_points": area_points})
+        chart_series.append(
+            {
+                **item,
+                "data": data,
+                "points": " ".join(point_strings),
+                "projection_points": projection_points,
+                "area_points": area_points,
+            }
+        )
 
     return {
         "view_box": f"0 0 {CHART_WIDTH} {CHART_HEIGHT}",

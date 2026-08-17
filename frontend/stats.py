@@ -97,6 +97,17 @@ def _chart_time_labels(rows, label_format):
     ]
 
 
+def _project_current_hour_value(value, current_time):
+    passed_minutes = (
+        current_time.minute
+        + current_time.second / 60
+        + current_time.microsecond / 60_000_000
+    )
+    if passed_minutes <= 0:
+        return None
+    return int(round(int(value or 0) / (passed_minutes / 60)))
+
+
 def _dashboard_counts(connectable, timings=None):
     row = _timed_rows(
         connectable,
@@ -185,7 +196,7 @@ def _match_throughput_24h(engine, timings=None):
     }
 
 
-def _pipeline_throughput_24h(engine, timings=None):
+def _pipeline_throughput_24h(engine, timings=None, now=None):
     rows = _timed_rows(
         engine,
         timings,
@@ -194,29 +205,33 @@ def _pipeline_throughput_24h(engine, timings=None):
     )
     labels = [row["bucket"].strftime("%H:%M") for row in rows]
     time_labels = _chart_time_labels(rows, "time")
+    current_time = now or datetime.now(timezone.utc)
+    series = [
+        {
+            "name": "Bild-Matching",
+            "values": [row["image_matching_total"] for row in rows],
+            "color": "#18a558",
+        },
+        {
+            "name": "Metadata-Matching",
+            "values": [row["metadata_matching_total"] for row in rows],
+            "color": "#e5532f",
+        },
+        {
+            "name": "Metadata-Extraktion",
+            "values": [row["metadata_extraction_total"] for row in rows],
+            "color": "#7357d8",
+        },
+    ]
+    for item in series:
+        if item["values"]:
+            item["projected_value"] = _project_current_hour_value(
+                item["values"][-1], current_time
+            )
+
     return {
         "rows": rows,
-        "chart": make_line_chart(
-            labels,
-            [
-                {
-                    "name": "Bild-Matching",
-                    "values": [row["image_matching_total"] for row in rows],
-                    "color": "#18a558",
-                },
-                {
-                    "name": "Metadata-Matching",
-                    "values": [row["metadata_matching_total"] for row in rows],
-                    "color": "#e5532f",
-                },
-                {
-                    "name": "Metadata-Extraktion",
-                    "values": [row["metadata_extraction_total"] for row in rows],
-                    "color": "#7357d8",
-                },
-            ],
-            time_labels=time_labels,
-        ),
+        "chart": make_line_chart(labels, series, time_labels=time_labels),
     }
 
 

@@ -20,6 +20,16 @@ _MATCH_EXPIRATION_INTERVAL_SQL = (
     "CAST(:match_expiration_seconds AS double precision) * INTERVAL '1 second'"
 )
 
+IMAGE_ONLY_MATCH_GRACE_PERIOD_SQL = "INTERVAL '1 day'"
+VISIBLE_MATCH_SQL = f"""
+NOT (
+    ms.metadata_final_score IS NULL
+    AND (ms.image_final_score IS NOT NULL OR ms.image_matching_confidence IS NOT NULL)
+    AND ms.image_match_date IS NOT NULL
+    AND ms.image_match_date > statement_timestamp() - {IMAGE_ONLY_MATCH_GRACE_PERIOD_SQL}
+)
+""".strip()
+
 _MATCH_GROUPS_CTE_SQL = f"""
 WITH match_groups AS NOT MATERIALIZED (
     SELECT
@@ -64,6 +74,7 @@ WITH match_groups AS NOT MATERIALIZED (
       ON source_lost.lost_artwork_id = ms.lost_id
     LEFT JOIN matching_program metadata_mp
       ON metadata_mp.matching_program_id = ms.metadata_matching_program
+    WHERE {VISIBLE_MATCH_SQL}
 )
 """
 
@@ -81,6 +92,7 @@ SELECT
     ) AS expired_count,
     count(*) FILTER (WHERE COALESCE(ms.rating, 0) < 0) AS discarded_count
 FROM match_score ms
+WHERE {VISIBLE_MATCH_SQL}
 """
 
 LOST_ARTWORK_INSTITUTION_CLASSIFICATIONS_SQL = """

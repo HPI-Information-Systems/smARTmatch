@@ -29,7 +29,7 @@
                 Es sind <b>{{ match_count }}</b> neue Matches vorhanden.
             </p>
             <div class="d-grid gap-2 d-sm-flex justify-content-sm-center">
-                {% if match_count > 1 %}
+                {% if match_count > 0 %}
                     <a class="btn btn-primary"
                        role="button"
                        href="{{ url_for('match_redirect') }}"><i class="bi bi-play-circle me-1" aria-hidden="true"></i>Auswerten</a>

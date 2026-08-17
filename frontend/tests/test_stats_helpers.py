@@ -10,6 +10,7 @@ from frontend import stats as stats_module
 from frontend import stats_storage as stats_storage_module
 from frontend.charts import make_bar_chart, make_line_chart
 from frontend.stats_format import format_bytes, format_int
+from frontend.sql import matches as match_sql
 from frontend.stats_storage import image_file_metrics, project_directory_metrics
 
 
@@ -25,6 +26,28 @@ class StatsHelperTests(unittest.TestCase):
         self.assertEqual(len(chart["series"][0]["data"]), 24)
         self.assertTrue(chart["show_points"])
         self.assertTrue(chart["series"][0]["points"])
+
+    def test_line_chart_draws_current_hour_projection_as_dashed_segment(self):
+        chart = make_line_chart(
+            ["09:00", "10:00", "11:00"],
+            [
+                {
+                    "name": "Metadata",
+                    "values": [10, 20, 5],
+                    "projected_value": 40,
+                    "color": "#000",
+                }
+            ],
+        )
+
+        series = chart["series"][0]
+        self.assertEqual(series["values"], [10, 20, 5])
+        self.assertEqual(series["data"][-1]["value"], 40)
+        self.assertTrue(series["data"][-1]["is_projection"])
+        self.assertEqual(len(series["points"].split()), 2)
+        self.assertEqual(len(series["projection_points"].split()), 2)
+        self.assertIn("Hochrechnung; bisher 5", series["data"][-1]["value_label"])
+        self.assertGreaterEqual(chart["y_ticks"][-1]["value"], 40)
 
     def test_bar_chart_uses_largest_value_as_full_width(self):
         bars = make_bar_chart(
@@ -397,7 +420,10 @@ class StatsHelperTests(unittest.TestCase):
 
         engine = object()
         with patch("frontend.stats._rows", side_effect=fake_rows):
-            throughput = stats_module._pipeline_throughput_24h(engine)
+            throughput = stats_module._pipeline_throughput_24h(
+                engine,
+                now=datetime(2026, 6, 11, 11, 15, tzinfo=timezone.utc),
+            )
 
         self.assertIs(captured["engine"], engine)
         self.assertIn("processed_events AS", captured["statement"])
@@ -411,6 +437,13 @@ class StatsHelperTests(unittest.TestCase):
         self.assertEqual(throughput["chart"]["series"][0]["values"], [5])
         self.assertEqual(throughput["chart"]["series"][1]["values"], [7])
         self.assertEqual(throughput["chart"]["series"][2]["values"], [11])
+        self.assertEqual(
+            [
+                series["projected_value"]
+                for series in throughput["chart"]["series"]
+            ],
+            [20, 28, 44],
+        )
 
     def test_match_categories_counts_match_score_review_state(self):
         captured = {}
@@ -436,6 +469,7 @@ class StatsHelperTests(unittest.TestCase):
         self.assertIs(captured["engine"], engine)
         self.assertNotIn("WITH match_categories AS", captured["statement"])
         self.assertIn("FROM match_score", captured["statement"])
+        self.assertIn(match_sql.VISIBLE_MATCH_SQL, captured["statement"])
         self.assertNotIn("FROM artwork_match", captured["statement"])
         self.assertNotIn("UNION ALL", captured["statement"])
         self.assertEqual(captured["params"], {})

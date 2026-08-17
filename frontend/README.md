@@ -9,10 +9,10 @@ Required settings:
 | Variable | Purpose | Compose value |
 |---|---|---|
 | `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Database connection | shared DB settings |
-| `SMARTMATCH_IMAGES_DIR` | Artwork image root | `/app/db/images` |
+| `SMARTMATCH_IMAGES_DIR` | Approved artwork image root | `/app/db/images` |
+| `CACHE_DIR` | Approved match-visualization root | `/app/cache` |
 | `FRONTEND_HOST` | Listen address in container | `0.0.0.0` |
 | `FRONTEND_PORT` | Listen port in container | `80` |
-| `FRONTEND_DEBUG` | Flask debug mode | `0` |
 | `SMARTMATCH_MATCH_EXPIRATION_AGE` | Age after which matches appear under `Abgelaufen`; positive duration using `s`, `m`, `h`, or `d` | `30d` |
 | `SMARTMATCH_STATS_CACHE_TTL_SECONDS` | Dashboard statistics cache lifetime | `60` |
 
@@ -22,15 +22,17 @@ docker compose ps frontend
 docker compose logs -f --tail=200 frontend
 ```
 
-Open <http://localhost/>. Keep `FRONTEND_DEBUG=0` outside development. The current container uses Flask's built-in server (`app.run`), not a production WSGI server; keep traffic/concurrency limited or deploy a tested production WSGI configuration before broader use.
+Open <http://localhost/>. The container serves the Flask application with Waitress.
 
 ## Security
 
 The application has no built-in TLS or user authentication and can modify review data. Do not publish it directly to the internet. Put it behind an authenticated TLS reverse proxy/VPN and restrict direct access to port `80`. Keep database credentials outside Git.
 
+DB-backed file routes serve only regular files whose resolved paths remain under `SMARTMATCH_IMAGES_DIR` or `CACHE_DIR`; paths outside those approved roots, including escaping symlinks, return 404.
+
 ## Persistent state
 
-PostgreSQL is authoritative for reviews and scores. Artwork images come from the `db/images/` bind mount; match visualizations may resolve through the mounted `cache/` tree. Back up PostgreSQL and images. Pipeline caches are normally regenerable, but deleting a visualization file can break an existing frontend image link.
+PostgreSQL is authoritative for reviews and scores. Artwork images come from the read-only `db/images/` bind mount; match visualizations may resolve through the read-only mounted `cache/` tree. Back up PostgreSQL and images. Pipeline caches are normally regenerable, but deleting a visualization file can break an existing frontend image link.
 
 ## Monitoring and recovery
 
@@ -49,4 +51,4 @@ Rebuild/recreate the service after application or dependency changes:
 docker compose up -d --build frontend
 ```
 
-The source directory is bind-mounted by the development Compose file, but production updates should still use a reviewed, immutable image rather than relying on live host edits.
+Frontend code is copied into the image at build time and is not bind-mounted at runtime. Rebuild and recreate the service to deploy reviewed code changes; only images and cache are mounted read-only, while the dedicated log mount remains writable.

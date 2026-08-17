@@ -185,6 +185,36 @@ class MatchListQueryTests(unittest.TestCase):
         self.assertIn("ILIKE CAST(:search_like AS text)", search_sql)
         self.assertIn("og.match_id = CAST(:current_match_id AS text)", neighbors_sql)
 
+    def test_recent_image_only_matches_are_hidden_by_user_facing_queries(self):
+        queries = {
+            "count": match_sql.match_count_sql(False),
+            "search count": match_sql.match_count_sql(True),
+            "page": match_sql.match_page_sql("similarity", False),
+            "detail": match_sql.match_detail_sql(),
+            "neighbors": match_sql.match_neighbors_sql("similarity", False),
+            "directory counts": match_sql.DIRECTORY_COUNTS_SQL,
+        }
+
+        for name, query in queries.items():
+            with self.subTest(query=name):
+                self.assertIn("ms.metadata_final_score IS NULL", query)
+                self.assertIn("ms.image_final_score IS NOT NULL", query)
+                self.assertIn("ms.image_matching_confidence IS NOT NULL", query)
+                self.assertIn("ms.image_match_date IS NOT NULL", query)
+                self.assertIn("statement_timestamp() - INTERVAL '1 day'", query)
+
+    def test_home_previews_apply_image_only_match_grace_period(self):
+        result = SimpleNamespace(mappings=lambda: [])
+        with patch.object(app.session, "execute", return_value=result) as execute:
+            self.assertEqual(app.get_top_unlabeled_auction_previews(), [])
+
+        sql = str(execute.call_args.args[0])
+        self.assertIn("ms.metadata_final_score IS NULL", sql)
+        self.assertIn("ms.image_final_score IS NOT NULL", sql)
+        self.assertIn("ms.image_matching_confidence IS NOT NULL", sql)
+        self.assertIn("ms.image_match_date IS NOT NULL", sql)
+        self.assertIn("statement_timestamp() - INTERVAL '1 day'", sql)
+
     def test_directory_counts_use_one_grouped_sql_request(self):
         row = SimpleNamespace(
             all_count=5,
@@ -210,6 +240,7 @@ class MatchListQueryTests(unittest.TestCase):
         self.assertNotIn("match_categories AS", sql)
         self.assertIn("count(*) FILTER", sql)
         self.assertIn("FROM match_score", sql)
+        self.assertIn("statement_timestamp() - INTERVAL '1 day'", sql)
         self.assertNotIn("UNION ALL", sql)
 
     def test_previous_next_match_uses_sql_window_neighbors(self):
@@ -650,6 +681,32 @@ class MatchListTemplateTests(unittest.TestCase):
             response.get_data(as_text=True),
             r'<td class="text-end">\s*Museum A\s*</td>',
         )
+
+    def test_match_detail_allows_http_source_urls(self):
+        match = self.example_match()
+        match.lost_artwork.lost_art_url = "https://lost.example/artwork?id=1&view=full"
+        match.auction_artwork.lot_url = "http://auction.example/lot/2"
+
+        response = self.render_detail(match)
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn('href="https://lost.example/artwork?id=1&amp;view=full"', html)
+        self.assertIn('href="http://auction.example/lot/2"', html)
+
+    def test_match_detail_rejects_unsafe_source_url_schemes(self):
+        match = self.example_match()
+        match.lost_artwork.lost_art_url = "javascript:alert(document.domain)"
+        match.lost_artwork.institution_classification = "Museum A"
+        match.auction_artwork.lot_url = "data:text/html,<script>alert(1)</script>"
+
+        response = self.render_detail(match)
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertNotIn("javascript:", html.lower())
+        self.assertNotIn("data:text/html", html.lower())
+        self.assertRegex(html, r'<td class="text-end">\s*Museum A\s*</td>')
 
     def test_combined_score_uses_weighted_component_bars(self):
         response = self.render_list("/list?image_weight=25", matches=[self.example_match()])

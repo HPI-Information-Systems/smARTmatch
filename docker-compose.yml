@@ -88,10 +88,14 @@ services:
     ports:
       - "80:80"
     volumes:
-      - .:/project:ro
-      - ./db/images:/app/db/images
-      - ./cache:/app/cache
-      - ./frontend:/app/frontend
+      - type: bind
+        source: .
+        target: /project
+        read_only: true
+        bind:
+          create_host_path: false
+      - ./db/images:/app/db/images:ro
+      - ./cache:/app/cache:ro
       - ./logs:/app/logs
     logging:
       driver: json-file

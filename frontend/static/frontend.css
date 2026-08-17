@@ -1848,6 +1848,10 @@ button,
   stroke-linejoin: round;
 }
 
+.stats-line-projection {
+  stroke-dasharray: 9 7;
+}
+
 .stats-line-point {
   stroke: #fff;
   stroke-width: 2;

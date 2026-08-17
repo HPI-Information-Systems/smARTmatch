@@ -39,10 +39,13 @@
                             <polygon class="stats-line-area" points="{{ series.area_points }}" fill="{{ series.color }}" />
                         {% endif %}
                         <polyline class="stats-line" points="{{ series.points }}" stroke="{{ series.color }}" />
+                        {% if series.projection_points %}
+                            <polyline class="stats-line stats-line-projection" points="{{ series.projection_points }}" stroke="{{ series.color }}" />
+                        {% endif %}
                         {% if chart.show_points %}
                             {% for point in series.data %}
                                 <circle class="stats-line-point" cx="{{ point.x }}" cy="{{ point.y }}" r="3.5" fill="{{ series.color }}">
-                                    <title{% if point.time_iso %} data-stats-time="{{ point.time_iso }}" data-stats-time-format="{{ point.time_format }}" data-stats-title-suffix=" · {{ series.name }}: {{ point.value }}"{% endif %}>{{ point.label }} · {{ series.name }}: {{ point.value }}</title>
+                                    <title{% if point.time_iso %} data-stats-time="{{ point.time_iso }}" data-stats-time-format="{{ point.time_format }}" data-stats-title-suffix=" · {{ series.name }}: {{ point.value_label }}"{% endif %}>{{ point.label }} · {{ series.name }}: {{ point.value_label }}</title>
                                 </circle>
                             {% endfor %}
                         {% endif %}
@@ -134,7 +137,8 @@
                     "Pipeline-Durchsatz pro Stunde",
                     "Verarbeitete Auktionswerke · letzte 24h",
                     stats.pipeline_throughput.chart,
-                    "Noch keine Pipeline-Läufe vorhanden."
+                    "Noch keine Pipeline-Läufe vorhanden.",
+                    "Gestrichelt: Hochrechnung für die laufende Stunde."
                 ) }}
             </div>
         </div>

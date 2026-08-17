@@ -2,8 +2,9 @@
 {% block content %}
     {% from "_score_progress_stack.html" import score_progress_stack %}
     {% macro source_link(url, institution=none) -%}
-        {% if url %}
-            <a class="link-primary" href="{{ url }}" target="_blank" rel="noopener noreferrer">
+        {% set safe_url = safe_source_url(url) %}
+        {% if safe_url %}
+            <a class="link-primary" href="{{ safe_url }}" target="_blank" rel="noopener noreferrer">
                 <i class="bi bi-box-arrow-up-right me-1" aria-hidden="true"></i>Quelle öffnen
             </a>
         {% elif institution %}

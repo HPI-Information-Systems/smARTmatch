@@ -1,5 +1,8 @@
 """SQL statements for dashboard statistics."""
 
+from .matches import VISIBLE_MATCH_SQL
+
+
 AUCTION_ARTWORKS_OVER_TIME_SQL = """
 WITH event_counts AS (
     SELECT aa.created_at::date AS bucket,
@@ -161,7 +164,7 @@ SELECT
     (SELECT COUNT(*)::int FROM auction_artwork) AS auction_artwork_count
 """
 
-MATCH_CATEGORIES_SQL = """
+MATCH_CATEGORIES_SQL = f"""
 SELECT
     COUNT(*) FILTER (
         WHERE COALESCE(bookmarked, false) = false AND COALESCE(rating, 0) = 0
@@ -171,7 +174,8 @@ SELECT
     )::int AS bookmarked_total,
     COUNT(*) FILTER (WHERE COALESCE(rating, 0) > 0)::int AS accepted_total,
     COUNT(*) FILTER (WHERE COALESCE(rating, 0) < 0)::int AS discarded_total
-FROM match_score
+FROM match_score ms
+WHERE {VISIBLE_MATCH_SQL}
 """
 
 LOST_ARTWORK_COUNT_SQL = "SELECT COUNT(*)::int FROM lost_artwork"

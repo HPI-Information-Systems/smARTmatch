@@ -46,23 +46,41 @@ esac
 [[ "$BACKUP_IMAGES" != "$SOURCE_IMAGES" ]] || fail "OUTPUT_PATH must not be the repository root"
 [[ ! -e "$BACKUP_PATH" && ! -L "$BACKUP_PATH" ]] || fail "OUTPUT_PATH already exists: $BACKUP_PATH"
 
-LOCK_PARENT="$ROOT_DIR/local"
+LOCK_PARENT="$ROOT_DIR/backups"
 LOCK_DIR="$LOCK_PARENT/.data-maintenance.lock"
 backup_complete=0
 lock_held=0
 backup_path_created=0
-scrapers_was_running=0
+writer_services=(scrapers matching_pipeline)
+running_writer_services=()
+services_to_restart=()
+
+restart_stopped_services() {
+    local service
+    local failed_services=()
+
+    for service in "${services_to_restart[@]}"; do
+        log "Starting service after backup: $service"
+        if docker compose start "$service"; then
+            log "Service restarted after backup: $service"
+        else
+            echo "Error: could not restart service after backup: $service" >&2
+            failed_services+=("$service")
+        fi
+    done
+    services_to_restart=("${failed_services[@]}")
+    [[ ${#services_to_restart[@]} -eq 0 ]]
+}
+
 cleanup_backup() {
     local status=$?
     trap - EXIT
     trap '' INT TERM
 
-    if [[ $scrapers_was_running -eq 1 ]]; then
-        log "Restarting the scraper service after backup exit"
-        if docker compose start scrapers; then
-            scrapers_was_running=0
-        else
-            echo "Error: could not restart the scraper service; start it manually" >&2
+    if [[ ${#services_to_restart[@]} -gt 0 ]]; then
+        log "Backup exiting; restarting services that were running before backup"
+        if ! restart_stopped_services; then
+            echo "Error: one or more services could not be restarted; start them manually: ${services_to_restart[*]}" >&2
             status=1
         fi
     fi
@@ -78,7 +96,7 @@ cleanup_backup() {
 
 mkdir -p "$LOCK_PARENT"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    fail "another backup or restore may be running; if not, remove stale lock: $LOCK_DIR"
+    fail "another backup, restore, or migration may be running; if not, remove stale lock: $LOCK_DIR"
 fi
 lock_held=1
 trap cleanup_backup EXIT
@@ -89,21 +107,31 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 cd "$ROOT_DIR"
-log "[1/5] Pausing image ingestion"
-if ! running_scrapers="$(docker compose ps --status running --quiet scrapers)"; then
-    fail "could not determine the scraper service state"
+log "[1/5] Pausing database and image writers for a coordinated snapshot"
+for service in "${writer_services[@]}"; do
+    if ! running_service="$(docker compose ps --status running --quiet "$service")"; then
+        fail "could not determine service state before backup: $service"
+    fi
+    if [[ -n "$running_service" ]]; then
+        running_writer_services+=("$service")
+        log "Service is running and will be stopped for backup: $service"
+    else
+        log "Service was already stopped and will remain stopped: $service"
+    fi
+done
+
+services_to_restart=("${running_writer_services[@]}")
+log "Stopping services for backup: ${writer_services[*]}"
+if ! docker compose stop "${writer_services[@]}"; then
+    fail "could not stop all database and image writer services"
 fi
-if [[ -n "$running_scrapers" ]]; then
-    scrapers_was_running=1
+for service in "${writer_services[@]}"; do
+    log "Service confirmed stopped for backup: $service"
+done
+if [[ ${#services_to_restart[@]} -eq 0 ]]; then
+    log "Both services were already stopped and will not be restarted."
 fi
-if ! docker compose stop scrapers; then
-    fail "could not stop the scraper service"
-fi
-if [[ $scrapers_was_running -eq 1 ]]; then
-    log "Scraper service stopped; PostgreSQL, frontend, and matching pipeline remain online."
-else
-    log "Scraper service was not running and will remain stopped."
-fi
+log "PostgreSQL and frontend remain online during the backup."
 log "Do not run manual image imports, migrations, or restores until this backup finishes."
 
 log "[2/5] Creating PostgreSQL dump: $DUMP_PATH"
@@ -132,14 +160,13 @@ dump_size="$(du -sh "$DUMP_PATH" | awk '{ print $1 }')"
 total_size="$(du -ch "$BACKUP_IMAGES" "$DUMP_PATH" | awk 'END { print $1 }')"
 backup_complete=1
 
-if [[ $scrapers_was_running -eq 1 ]]; then
-    log "[5/5] Restarting the scraper service"
-    if ! docker compose start scrapers; then
-        fail "backup completed at $BACKUP_PATH, but the scraper service could not be restarted; start it manually"
+if [[ ${#services_to_restart[@]} -gt 0 ]]; then
+    log "[5/5] Restarting services that were running before backup"
+    if ! restart_stopped_services; then
+        fail "backup completed at $BACKUP_PATH, but one or more services could not be restarted; start them manually: ${services_to_restart[*]}"
     fi
-    scrapers_was_running=0
 else
-    log "[5/5] Leaving the scraper service stopped"
+    log "[5/5] No services need to be restarted"
 fi
 
 printf '\nBackup complete: %s\n' "$BACKUP_PATH"

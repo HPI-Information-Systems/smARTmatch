@@ -43,7 +43,7 @@ if [[ -e "$TARGET_IMAGES" || -L "$TARGET_IMAGES" ]]; then
     esac
 fi
 
-LOCK_PARENT="$ROOT_DIR/local"
+LOCK_PARENT="$ROOT_DIR/backups"
 LOCK_DIR="$LOCK_PARENT/.data-maintenance.lock"
 staged_dump=""
 staged_images=""
@@ -78,7 +78,7 @@ cleanup_restore() {
 
 mkdir -p "$LOCK_PARENT"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    fail "another backup or restore may be running; if not, remove stale lock: $LOCK_DIR"
+    fail "another backup, restore, or migration may be running; if not, remove stale lock: $LOCK_DIR"
 fi
 trap cleanup_restore EXIT
 

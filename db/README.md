@@ -31,10 +31,10 @@ Back up the database and `db/images/` as one consistent set:
 
 ```bash
 timestamp="$(date +%Y%m%d_%H%M%S)"
-./scripts/backup.sh "local/db-backups/smartmatch_${timestamp}"
+./scripts/backup.sh "backups/smartmatch_${timestamp}"
 ```
 
-The script pauses `scrapers` only when that service is running and restores its previous state when it exits. PostgreSQL, `frontend`, and `matching_pipeline` remain online. Do not run manual image imports, migrations, or restores concurrently. Each backup contains `db_dump.dump` (PostgreSQL custom format) and `db/images/`; the progress output reports the image count, image size, dump size, and total backup size.
+While holding the shared maintenance lock, the script stops `scrapers` and `matching_pipeline` if they are running so neither image ingestion nor matching cleanup can change database paths or image files between the database dump and image copy. It logs every stop and restart, restarts exactly the services that were running before the backup even when the backup fails, and leaves services that were already stopped alone. PostgreSQL and `frontend` remain online. Do not run manual image imports, migrations, or restores concurrently. Each backup contains `db_dump.dump` (PostgreSQL custom format) and `db/images/`; the progress output reports the image count, image size, dump size, and total backup size.
 
 Test restores from a separate checkout and Compose project (or on a separate host), because the restore script always targets the current checkout's Compose `db` service and `db/images/`. A restore forcefully disconnects clients, drops and recreates the configured `POSTGRES_DB`, restores the dump, and replaces the entire live image directory. All previous database objects, rows, and image files are removed. Dump ownership and privileges are not applied; restored objects use the configured `POSTGRES_USER`. PostgreSQL roles and other cluster-wide settings are not part of this backup. Never overwrite the only production copy without a tested backup.
 
@@ -42,7 +42,7 @@ A failure after the database is dropped can leave it absent or empty; a later im
 
 ```bash
 if docker compose stop scrapers matching_pipeline frontend &&
-   ./scripts/restore.sh "local/db-backups/smartmatch_YYYYMMDD_HHMMSS"; then
+   ./scripts/restore.sh "backups/smartmatch_YYYYMMDD_HHMMSS"; then
   docker compose up -d scrapers matching_pipeline frontend
 else
   echo "restore aborted; verify Compose service state before retrying" >&2
@@ -63,9 +63,31 @@ else
 fi
 ```
 
-Without an argument the helper applies its current default migration. It reads `ENV_FILE`, not `SMARTMATCH_ENV_FILE`. Set `DB_SERVICE` or `BACKUP_DIR` when needed. Each SQL file runs separately: if a later file fails, earlier files remain applied. Review and apply migrations exactly once in release order, then verify logs before restoring traffic.
+The helper has no default migration and requires one or more explicit migration paths. It reads `ENV_FILE`, not `SMARTMATCH_ENV_FILE`. Set `DB_SERVICE` or `BACKUP_DIR` when needed. Before creating the backup, the helper acquires `backups/.data-maintenance.lock`, shared with backup and restore operations, and holds it until the complete migration run exits. If that lock already exists, inspect the active maintenance operation or remove the lock only after confirming it is stale. Each SQL file runs separately: if a later file fails, earlier files remain applied. Review and apply migrations in release order, then verify logs before restoring traffic.
 
-The current migration, `15_add_scraper_queue_progress.sql`, adds process-shared queue counters used by the scraper dashboard. Apply it before deploying workers that use the updated `ScraperRun` model.
+The helper records each successful migration basename, SHA-256 checksum, status, and timestamps in `public.schema_migrations`. An already-recorded migration is skipped; a changed checksum or an incomplete/failed ledger row stops the run for review. Query the latest successful entry with:
+
+```bash
+ENV_FILE="${SMARTMATCH_ENV_FILE:-.env.docker}" \
+  ./scripts/latest_applied_migration.sh
+```
+
+Successful stdout contains only the migration filename, making the command suitable for deployment checks. It exits nonzero when the ledger does not exist or has no successful row.
+
+Databases whose migrations predate the ledger require a one-time, explicit baseline. After independently verifying that each listed migration is already present, record it without executing its SQL:
+
+```bash
+ENV_FILE="${SMARTMATCH_ENV_FILE:-.env.docker}" \
+  ./scripts/apply_production_migration.sh --baseline \
+  db/init-production/migrations/20_track_error_free_image_matching.sql \
+  db/init-production/migrations/21_mark_cleaned_up_image_files.sql
+```
+
+Baseline mode still creates a database backup. Never baseline a migration merely because its file exists; this would make the ledger disagree with the real schema.
+
+Migration 19 collapses duplicate `image_file.file_path` rows without transferring `is_embedded=true` across image IDs. It resets each affected canonical image and dependent auction processing state so ID-keyed embedding and candidate artifacts cannot be trusted accidentally. After applying it, run image blocking successfully before running image cleanup; blocking rewrites the lost embedding cache with canonical IDs and replaces stale candidate identities.
+
+Migration 24 adds `image_file.content_sha256` and monotonic `content_version`. Its trigger increments the version and clears `is_embedded` whenever a scraper records different bytes. The migration also clears embedding state on legacy rows whose digest is initially unknown. Apply it before deploying scraper or blocking code that reads these columns.
 
 ## Lost-artwork institution classification
 
@@ -82,7 +104,7 @@ FROM lost_artwork
 WHERE institution_classification IS NOT NULL;
 ```
 
-Fresh databases receive the generic column from `01_schema_production.sql`; apply `db/init-production/migrations/14_add_lost_artwork_institution_classification.sql` only to an existing database. `local/10_classify_spsg_lost_artworks.sql` contains the SPSG-specific backfill and write trigger and can be manually appended to `local/09_import_lostart_data.sql`. It is intentionally kept separate. For local UI testing, run `local/11_insert_example_institution_matches.sql` afterward.
+Fresh databases receive the generic column from `01_schema_production.sql`; apply `db/init-production/migrations/14_add_lost_artwork_institution_classification.sql` only to an existing database.
 
 ## Monitoring and maintenance
 
@@ -100,6 +122,4 @@ Monitor volume capacity, connection failures, long-running queries, and backup s
 
 ## Image records
 
-Image bytes live in `db/images/`; `image_file.file_path` points to them through auction/lost link tables. Relative paths resolve under `SMARTMATCH_IMAGES_DIR`. Preserve DB rows and image files as one logical backup.
-
-Legacy import/backfill scripts read the repository-root `.env` and run on the host, so configure a host-reachable DB address/port before using them. `load_lost_artworks_to_prod.py` also requires all `NON_PROD_POSTGRES_*` values. Inspect `--help` and dry-run before any write.
+Image bytes live in `db/images/`; `image_file.file_path` points to them through auction/lost link tables. Relative paths resolve under `SMARTMATCH_IMAGES_DIR`. Scrapers persist the SHA-256 digest of the exact normalized JPEG bytes. Before updating a stable path's digest, cooperating scraper writers take a transaction-scoped PostgreSQL advisory lock for that path and rehash the currently stored file, preserving filesystem/DB update order across concurrent runs. A digest change atomically advances `content_version` and invalidates `is_embedded`, allowing blocking to commit only the version it actually read. Filenames do not need an extension: the SPSG import uses extensionless content-addressed paths, and image decoders identify approved JPEG/PNG/WebP/GIF data from file signatures. Preserve DB rows and image files as one logical backup.

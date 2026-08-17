@@ -35,6 +35,35 @@ class PipelineDeploymentTests(unittest.TestCase):
         self.assertEqual(database["image"], "postgres:16.15")
         self.assertNotIn("ports", database)
 
+    def test_work_daemons_have_work_aware_healthchecks(self) -> None:
+        compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text())
+        expected_files = {
+            "matching_pipeline": "/tmp/smartmatch-matching-health.json",
+        }
+        for service_name, health_file in expected_files.items():
+            service = compose["services"][service_name]
+            with self.subTest(service=service_name):
+                self.assertEqual(
+                    service["environment"]["SMARTMATCH_HEALTH_FILE"], health_file
+                )
+                self.assertEqual(
+                    service["healthcheck"]["test"],
+                    [
+                        "CMD",
+                        "python",
+                        "-m",
+                        "shared.service_health",
+                        "--file",
+                        health_file,
+                        "--max-age-seconds",
+                        "180",
+                    ],
+                )
+                self.assertEqual(service["healthcheck"]["interval"], "30s")
+                self.assertEqual(service["healthcheck"]["timeout"], "10s")
+                self.assertEqual(service["healthcheck"]["retries"], 3)
+                self.assertEqual(service["healthcheck"]["start_period"], "30s")
+
     def test_frontend_uses_baked_code_and_read_only_data_mounts(self) -> None:
         compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text())
         frontend = compose["services"]["frontend"]

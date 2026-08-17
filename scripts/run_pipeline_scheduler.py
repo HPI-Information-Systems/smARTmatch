@@ -17,6 +17,7 @@ from threading import Event
 from typing import Mapping
 
 from shared.logging_adapter import configure_logging, get_logger
+from shared.service_health import HealthReporter
 
 DEFAULT_INTERVAL_MINUTES = 1.0
 POLL_SECONDS = 0.5
@@ -47,35 +48,61 @@ class ProcStat:
 
 PIPELINE_STEPS = (
     PipelineStep(
-        "image-blocking", "image blocking",
-        (sys.executable, "-m", "matching_pipeline.image_blocking", "--no-compile"), _APP_ROOT,
+        "image-blocking",
+        "image blocking",
+        (sys.executable, "-m", "matching_pipeline.image_blocking", "--no-compile"),
+        _APP_ROOT,
     ),
     PipelineStep(
-        "image-matching", "image matching",
-        (sys.executable, "-m", "matching_pipeline.image_matching"), _APP_ROOT,
+        "image-matching",
+        "image matching",
+        (sys.executable, "-m", "matching_pipeline.image_matching"),
+        _APP_ROOT,
     ),
     PipelineStep(
-        "metadata-extraction", "metadata extraction and normalization",
-        (sys.executable, "-m", "matching_pipeline.metadata_extraction"), _APP_ROOT,
+        "metadata-extraction",
+        "metadata extraction and normalization",
+        (sys.executable, "-m", "matching_pipeline.metadata_extraction"),
+        _APP_ROOT,
     ),
     PipelineStep(
-        "metadata-matching", "metadata matching",
-        (sys.executable, "-m", "matching_pipeline.metadata_matching"), _APP_ROOT,
+        "metadata-matching",
+        "metadata matching",
+        (sys.executable, "-m", "matching_pipeline.metadata_matching"),
+        _APP_ROOT,
     ),
     PipelineStep(
-        "image-cleanup", "unmatched auction image cleanup",
-        (sys.executable, "-m", "matching_pipeline.image_cleanup", "--apply"), _APP_ROOT,
+        "image-cleanup",
+        "unmatched auction image cleanup",
+        (sys.executable, "-m", "matching_pipeline.image_cleanup", "--apply"),
+        _APP_ROOT,
     ),
 )
 
 
 def main() -> int:
     configure_logging()
-    args = _parse_args()
-    _set_child_subreaper(True)
-    stop_event = Event()
-    _install_signal_handlers(stop_event)
-    return run_scheduler(args.interval_minutes * 60.0, stop_event)
+    health = HealthReporter.from_environment("matching_pipeline")
+    health.update("starting", "scheduler initialization")
+    try:
+        args = _parse_args()
+        _set_child_subreaper(True)
+        stop_event = Event()
+        _install_signal_handlers(stop_event)
+        result = run_scheduler(
+            args.interval_minutes * 60.0,
+            stop_event,
+            health=health,
+        )
+    except BaseException as exc:
+        health.update(
+            "unhealthy",
+            f"scheduler startup/runtime failure: {type(exc).__name__}",
+            error_class=type(exc).__name__,
+        )
+        raise
+    health.update("stopping", "scheduler stopped")
+    return result
 
 
 def _parse_args() -> argparse.Namespace:
@@ -100,31 +127,83 @@ def _install_signal_handlers(stop_event: Event) -> None:
     signal.signal(signal.SIGINT, request_stop)
 
 
-def run_scheduler(interval_seconds: float, stop_event: Event) -> int:
+def run_scheduler(
+    interval_seconds: float,
+    stop_event: Event,
+    *,
+    health: HealthReporter | None = None,
+) -> int:
     next_run_at = time.monotonic()
     cycle_number = 0
+    consecutive_failed_cycles = 0
     _log(f"pipeline scheduler started: interval={interval_seconds / 60.0:g}m")
+    if health is not None:
+        health.update("running", "waiting for first pipeline cycle", cycle=0)
 
     while not stop_event.is_set():
         now = time.monotonic()
         if now < next_run_at:
+            if health is not None:
+                health.heartbeat(cycle=cycle_number)
             stop_event.wait(min(POLL_SECONDS, next_run_at - now))
             continue
 
         cycle_number += 1
-        _run_cycle(cycle_number, stop_event)
-        next_run_at = _next_trigger_after(next_run_at, interval_seconds, time.monotonic())
+        if health is None:
+            failed_steps = _run_cycle(cycle_number, stop_event)
+        else:
+            failed_steps = _run_cycle(cycle_number, stop_event, health=health)
+        if stop_event.is_set():
+            break
+        if failed_steps:
+            consecutive_failed_cycles += 1
+            if health is not None:
+                health.update(
+                    "unhealthy",
+                    "pipeline cycle failed",
+                    cycle=cycle_number,
+                    failed_steps=failed_steps,
+                    consecutive_failed_cycles=consecutive_failed_cycles,
+                )
+        else:
+            consecutive_failed_cycles = 0
+            if health is not None:
+                health.update(
+                    "healthy",
+                    "pipeline cycle completed successfully",
+                    cycle=cycle_number,
+                    failed_steps=[],
+                    consecutive_failed_cycles=0,
+                )
+        next_run_at = _next_trigger_after(
+            next_run_at, interval_seconds, time.monotonic()
+        )
 
+    if health is not None:
+        health.update("stopping", "pipeline scheduler stopping", cycle=cycle_number)
     _log("pipeline scheduler stopped")
     return 0
 
 
-def _run_cycle(cycle_number: int, stop_event: Event) -> list[str]:
+def _run_cycle(
+    cycle_number: int,
+    stop_event: Event,
+    *,
+    health: HealthReporter | None = None,
+) -> list[str]:
     started_at = time.monotonic()
     failed_steps: list[str] = []
     blocking_succeeded = True
     previous_name = "cycle start"
     _log(f"cycle={cycle_number} started")
+    if health is not None:
+        cycle_state = "unhealthy" if health.state == "unhealthy" else "running"
+        health.update(
+            cycle_state,
+            "pipeline cycle running",
+            cycle=cycle_number,
+            failed_steps=[],
+        )
 
     for index, step in enumerate(PIPELINE_STEPS, start=1):
         if stop_event.is_set():
@@ -143,7 +222,25 @@ def _run_cycle(cycle_number: int, stop_event: Event) -> list[str]:
                     level=logging.ERROR,
                 )
 
-        return_code = _run_step(step, stop_event, extra_env=extra_env)
+        if health is not None:
+            step_state = "unhealthy" if failed_steps else cycle_state
+            health.update(
+                step_state,
+                f"pipeline step running: {step.name}",
+                cycle=cycle_number,
+                stage=step.key,
+                failed_steps=failed_steps,
+            )
+        if health is None:
+            return_code = _run_step(step, stop_event, extra_env=extra_env)
+        else:
+            return_code = _run_step(
+                step,
+                stop_event,
+                extra_env=extra_env,
+                health=health,
+                cycle_number=cycle_number,
+            )
         if return_code != 0:
             failed_steps.append(step.name)
             _log(
@@ -151,6 +248,15 @@ def _run_cycle(cycle_number: int, stop_event: Event) -> list[str]:
                 f"exit_code={return_code}; continuing",
                 level=logging.ERROR,
             )
+            if health is not None:
+                health.update(
+                    "unhealthy",
+                    f"pipeline step failed: {step.name}",
+                    cycle=cycle_number,
+                    stage=step.key,
+                    failed_steps=failed_steps,
+                    exit_code=return_code,
+                )
         if step.key == "image-blocking":
             blocking_succeeded = return_code == 0
         previous_name = step.name
@@ -169,6 +275,8 @@ def _run_step(
     stop_event: Event,
     *,
     extra_env: Mapping[str, str] | None = None,
+    health: HealthReporter | None = None,
+    cycle_number: int | None = None,
 ) -> int:
     env = os.environ.copy()
     env.update(extra_env or {})
@@ -190,6 +298,8 @@ def _run_step(
         )
         return 127
     while process.poll() is None:
+        if health is not None:
+            health.heartbeat(cycle=cycle_number, stage=step.key)
         if stop_event.wait(POLL_SECONDS):
             _stop_process(process)
             break

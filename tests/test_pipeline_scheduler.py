@@ -12,6 +12,22 @@ from unittest import mock
 from scripts import run_pipeline_scheduler as scheduler
 
 
+class _Health:
+    def __init__(self):
+        self.state = "starting"
+        self.updates = []
+        self.heartbeats = []
+
+    def update(self, state, detail, **fields):
+        self.state = state
+        self.updates.append((state, detail, fields))
+        return True
+
+    def heartbeat(self, **fields):
+        self.heartbeats.append(fields)
+        return True
+
+
 class PipelineCycleTests(unittest.TestCase):
     def test_pipeline_steps_are_explicit_and_ordered(self) -> None:
         self.assertEqual(
@@ -49,7 +65,10 @@ class PipelineCycleTests(unittest.TestCase):
         with mock.patch.object(scheduler, "_run_step", side_effect=run_step):
             failures = scheduler._run_cycle(1, Event())
 
-        self.assertEqual([key for key, _env in calls], [step.key for step in scheduler.PIPELINE_STEPS])
+        self.assertEqual(
+            [key for key, _env in calls],
+            [step.key for step in scheduler.PIPELINE_STEPS],
+        )
         self.assertEqual(failures, ["image blocking"])
         self.assertEqual(calls[1][1], {scheduler.SKIP_IMAGE_MATCHING_ENV: "1"})
 
@@ -66,6 +85,19 @@ class PipelineCycleTests(unittest.TestCase):
         self.assertEqual(
             calls[1],
             ("image-matching", {scheduler.SKIP_IMAGE_MATCHING_ENV: "0"}),
+        )
+
+    def test_failed_step_marks_active_cycle_unhealthy(self) -> None:
+        health = _Health()
+        with mock.patch.object(scheduler, "_run_step", return_value=7):
+            failures = scheduler._run_cycle(1, Event(), health=health)
+        self.assertEqual(len(failures), len(scheduler.PIPELINE_STEPS))
+        self.assertEqual(health.state, "unhealthy")
+        self.assertTrue(
+            any(
+                detail.startswith("pipeline step failed")
+                for _, detail, _ in health.updates
+            )
         )
 
     def test_stopped_cycle_does_not_start_steps(self) -> None:
@@ -90,6 +122,22 @@ class SchedulerCadenceTests(unittest.TestCase):
             self.assertEqual(scheduler.run_scheduler(60.0, stop_event), 0)
         self.assertEqual(cycles, [1])
 
+    def test_scheduler_health_recovers_only_after_successful_cycle(self) -> None:
+        stop_event = mock.Mock()
+        stop_event.is_set.side_effect = [False, False, True]
+        health = _Health()
+        health.state = "unhealthy"
+        with mock.patch.object(
+            scheduler.time, "monotonic", side_effect=[100.0, 100.0, 100.1]
+        ), mock.patch.object(scheduler, "_run_cycle", return_value=[]):
+            self.assertEqual(
+                scheduler.run_scheduler(60.0, stop_event, health=health), 0
+            )
+        self.assertTrue(
+            any(state == "healthy" for state, _detail, _fields in health.updates)
+        )
+        self.assertEqual(health.state, "stopping")
+
     def test_scheduler_waits_until_next_trigger(self) -> None:
         stop_event = mock.Mock()
         stop_event.is_set.side_effect = [False, True]
@@ -111,9 +159,7 @@ class SchedulerCliTests(unittest.TestCase):
             self.assertEqual(scheduler._parse_args().interval_minutes, 1.0)
 
     def test_parse_args_accepts_custom_positive_interval(self) -> None:
-        with mock.patch.object(
-            sys, "argv", ["scheduler", "--interval-minutes", "2.5"]
-        ):
+        with mock.patch.object(sys, "argv", ["scheduler", "--interval-minutes", "2.5"]):
             self.assertEqual(scheduler._parse_args().interval_minutes, 2.5)
 
     def test_parse_args_rejects_nonpositive_interval(self) -> None:
@@ -124,23 +170,37 @@ class SchedulerCliTests(unittest.TestCase):
 
     def test_main_wires_arguments_signals_and_scheduler(self) -> None:
         args = argparse.Namespace(interval_minutes=2.0)
-        with mock.patch.object(scheduler, "_parse_args", return_value=args), mock.patch.object(
+        health = mock.Mock()
+        with mock.patch.object(
+            scheduler, "_parse_args", return_value=args
+        ), mock.patch.object(
             scheduler, "_set_child_subreaper"
         ) as set_subreaper, mock.patch.object(
             scheduler, "_install_signal_handlers"
         ) as install_handlers, mock.patch.object(
             scheduler, "run_scheduler", return_value=9
-        ) as run_scheduler:
+        ) as run_scheduler, mock.patch.object(
+            scheduler.HealthReporter, "from_environment", return_value=health
+        ):
             self.assertEqual(scheduler.main(), 9)
         set_subreaper.assert_called_once_with(True)
         stop_event = install_handlers.call_args.args[0]
-        run_scheduler.assert_called_once_with(120.0, stop_event)
+        run_scheduler.assert_called_once_with(120.0, stop_event, health=health)
+        health.update.assert_has_calls(
+            [
+                mock.call("starting", "scheduler initialization"),
+                mock.call("stopping", "scheduler stopped"),
+            ]
+        )
 
     def test_installed_signal_handler_sets_stop_event(self) -> None:
         stop_event = Event()
         with mock.patch.object(signal, "signal") as install:
             scheduler._install_signal_handlers(stop_event)
-        self.assertEqual([call.args[0] for call in install.call_args_list], [signal.SIGTERM, signal.SIGINT])
+        self.assertEqual(
+            [call.args[0] for call in install.call_args_list],
+            [signal.SIGTERM, signal.SIGINT],
+        )
         install.call_args_list[0].args[1](signal.SIGTERM, None)
         self.assertTrue(stop_event.is_set())
 

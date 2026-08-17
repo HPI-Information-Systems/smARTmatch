@@ -66,7 +66,23 @@ Stop the scheduler before manual writer runs. Only run image matching after succ
 
 Cache paths and schemas did not change during package consolidation. Stop the service before invalidating caches. Cache deletion does not reset database processed flags or perform historical reprocessing.
 
-Monitor `cycle=... finished` log lines, stage tracebacks, disk use, pending-row trends, nonzero image `failed_images`/`failed_pairs`, and cleanup summaries. Failed image work remains pending rather than becoming deletion-eligible. A running container does not prove each stage succeeded. See [auction image cleanup](image_cleanup/README.md) for its dry-run command, eligibility rules, direct-deletion safeguards, and legacy-data warning.
+Monitor `cycle=... finished` log lines, stage tracebacks, disk use, pending-row trends, nonzero image `failed_images`/`failed_pairs`, and cleanup summaries. Failed image work remains pending rather than becoming deletion-eligible.
+
+The scheduler writes an atomic work-status heartbeat consumed by the Compose
+healthcheck. Active stages and a successful latest cycle are healthy. Any failed
+stage marks the service unhealthy for the rest of that cycle and between cycles;
+only a later fully successful cycle restores health. Missing, malformed, or
+older-than-three-minute status is unhealthy. This changes Compose health status
+only—the scheduler keeps its existing retry cadence and Compose does not restart
+an unhealthy container automatically. Inspect it with:
+
+```bash
+docker compose ps matching_pipeline
+docker inspect --format '{{json .State.Health}}' "$(docker compose ps -q matching_pipeline)"
+```
+
+See [auction image cleanup](image_cleanup/README.md) for its dry-run command,
+eligibility rules, direct-deletion safeguards, and legacy-data warning.
 
 ## Optional telemetry service
 

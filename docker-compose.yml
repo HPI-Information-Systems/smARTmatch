@@ -59,11 +59,18 @@ services:
     gpus: all
     environment:
       SMARTMATCH_CONTAINER_NAME: matching_pipeline
+      SMARTMATCH_HEALTH_FILE: /tmp/smartmatch-matching-health.json
     volumes:
       - ./db/images:/app/db/images
       - ./cache/matching_pipeline:/app/cache
       - ./cache/matching_pipeline/models:/root/.cache
       - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-m", "shared.service_health", "--file", "/tmp/smartmatch-matching-health.json", "--max-age-seconds", "180"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     logging:
       driver: json-file
       options:

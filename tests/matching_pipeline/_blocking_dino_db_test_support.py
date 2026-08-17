@@ -27,7 +27,6 @@ class FakeModel:
 
 def bare_adapter() -> dino_adapter.DinoV3Adapter:
     adapter = dino_adapter.DinoV3Adapter.__new__(dino_adapter.DinoV3Adapter)
-    adapter.size_key = "s"
     adapter.model_id = "fake/model"
     adapter.device = "cpu"
     adapter.hf_token = None

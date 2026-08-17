@@ -350,6 +350,8 @@ class LostArtScraper(Scraper):
         self.db.set_lost_artwork_images(
             lost_artwork_id=artwork.lost_artwork_id,
             image_paths=img_paths,
+            image_source_urls=self.last_downloaded_image_sources,
+            image_content_sha256=self.last_downloaded_image_content_sha256,
         )
 
         self._processed += 1

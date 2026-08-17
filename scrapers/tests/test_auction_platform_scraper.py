@@ -14,7 +14,11 @@ from PIL import Image
 
 from scrapers.utils.auction_scraper import AuctionPlatformScraper, UnsafePurgeError
 from scrapers.utils.image_storage import default_images_dir, safe_image_prefix
-from scrapers.utils.scraper import _write_bytes_atomically
+from scrapers.utils.scraper import (
+    _is_valid_cached_jpeg,
+    _to_jpeg_bytes,
+    _write_bytes_atomically,
+)
 
 
 class _FakeNestedTransaction:
@@ -117,11 +121,15 @@ class _DummyAuctionScraper(AuctionPlatformScraper):
         self.db.reviews.clear()
 
 
-def _png_bytes(*, width: int, height: int) -> bytes:
+def _image_bytes(*, image_format: str, width: int, height: int) -> bytes:
     image = Image.new("RGBA", (width, height), (10, 20, 30, 120))
     buffer = BytesIO()
-    image.save(buffer, format="PNG")
+    image.save(buffer, format=image_format)
     return buffer.getvalue()
+
+
+def _png_bytes(*, width: int, height: int) -> bytes:
+    return _image_bytes(image_format="PNG", width=width, height=height)
 
 
 class AuctionPlatformScraperTests(unittest.TestCase):
@@ -401,6 +409,7 @@ class AuctionPlatformScraperTests(unittest.TestCase):
                     "auction_artwork_id": artwork_id,
                     "image_paths": [],
                     "image_source_urls": {},
+                    "image_content_sha256": {},
                     "authoritative": False,
                 }
             ],
@@ -470,6 +479,10 @@ class AuctionPlatformScraperTests(unittest.TestCase):
                 )
             self.assertEqual(cached_paths, paths)
             self.assertTrue(scraper.last_image_download_complete)
+            self.assertEqual(
+                scraper.last_downloaded_image_content_sha256,
+                {cached_paths[0]: hashlib.sha256(cached_path.read_bytes()).hexdigest()},
+            )
 
     def test_atomic_image_write_removes_temporary_file_after_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -481,6 +494,17 @@ class AuctionPlatformScraperTests(unittest.TestCase):
             self.assertEqual(list(Path(tmp).iterdir()), [])
             self.assertFalse(destination.exists())
 
+    def test_remote_image_conversion_rejects_unapproved_format(self) -> None:
+        bmp_bytes = _image_bytes(image_format="BMP", width=10, height=10)
+
+        self.assertIsNone(_to_jpeg_bytes(bmp_bytes))
+
+    def test_cached_jpeg_validation_accepts_extensionless_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "8262f768ca77afc3990dac4aa5d9dc1d6ae8d916"
+            Image.new("RGB", (10, 10), "red").save(image_path, format="JPEG")
+
+            self.assertTrue(_is_valid_cached_jpeg(image_path))
 
     def test_download_lot_images_uses_url_hash_to_prevent_stale_cache_aliases(
         self,
@@ -508,6 +532,10 @@ class AuctionPlatformScraperTests(unittest.TestCase):
                 {paths[0]: "https://example.org/a.jpg"},
             )
             saved_path = Path(paths[0])
+            self.assertEqual(
+                scraper.last_downloaded_image_content_sha256,
+                {paths[0]: hashlib.sha256(saved_path.read_bytes()).hexdigest()},
+            )
             url_hash = hashlib.sha1(b"https://example.org/a.jpg").hexdigest()[:10]
             self.assertEqual(
                 saved_path.name,

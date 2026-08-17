@@ -91,17 +91,26 @@ class EmbeddingCacheValidationTests(unittest.TestCase):
         self.assertEqual(cache._batch_count(5, 2), 3)
 
     def test_cached_validation_rejects_zero_vectors_and_mismatched_lengths(self) -> None:
-        metadata = {"model_id": "model", "embedding_dim": 2, "dtype": "float32"}
+        sources = {"a": {"source_sha256": "a"}}
+        metadata = {
+            "model_id": "model",
+            "embedding_dim": 2,
+            "dtype": "float32",
+            "source_identities": sources,
+            "source_identity_sha256": cache._source_identity_sha256(sources),
+        }
         with mock.patch.object(cache, "env_dinov3_model_id", return_value="model"):
             with self.assertRaisesRegex(ValueError, "zero vectors"):
                 cache._valid_cached_embeddings(
-                    cache.LostEmbeddingCache(["a"], np.asarray([[0.0, 0.0]]), metadata)
+                    cache.LostEmbeddingCache(["a"], np.asarray([[0.0, 0.0]]), metadata),
+                    sources,
                 )
             with self.assertRaises(ValueError):
                 cache._valid_cached_embeddings(
                     cache.LostEmbeddingCache(
                         ["a", "b"], np.asarray([[1.0, 0.0]]), metadata
-                    )
+                    ),
+                    sources,
                 )
 
     def test_metadata_dimension_and_cache_rewrite_conditions(self) -> None:
@@ -110,21 +119,36 @@ class EmbeddingCacheValidationTests(unittest.TestCase):
         self.assertEqual(cache._metadata_embedding_dim({"embedding_dim": "bad"}), -1)
         self.assertEqual(cache._string_array([]).dtype, np.dtype("<U1"))
 
+        sources = {"a": {"source_sha256": "a"}}
         item = cache.LostEmbeddingCache(
             ["a"], np.asarray([[1.0, 0.0]]), {
                 "model_id": "model",
                 "embedding_dim": 2,
                 "dtype": "float32",
+                "source_identities": sources,
+                "source_identity_sha256": cache._source_identity_sha256(sources),
             }
         )
         with mock.patch.object(cache, "env_dinov3_model_id", return_value="model"):
-            self.assertTrue(cache._cache_needs_rewrite(None, ["a"], "float32", 2))
-            self.assertTrue(cache._cache_needs_rewrite(item, ["b"], "float32", 2))
-            self.assertTrue(cache._cache_needs_rewrite(item, ["a"], "float16", 2))
-            self.assertTrue(cache._cache_needs_rewrite(item, ["a"], "float32", 3))
-            self.assertFalse(cache._cache_needs_rewrite(item, ["a"], "float32", 2))
+            self.assertTrue(
+                cache._cache_needs_rewrite(None, ["a"], "float32", 2, sources)
+            )
+            self.assertTrue(
+                cache._cache_needs_rewrite(item, ["b"], "float32", 2, sources)
+            )
+            self.assertTrue(
+                cache._cache_needs_rewrite(item, ["a"], "float16", 2, sources)
+            )
+            self.assertTrue(
+                cache._cache_needs_rewrite(item, ["a"], "float32", 3, sources)
+            )
+            self.assertFalse(
+                cache._cache_needs_rewrite(item, ["a"], "float32", 2, sources)
+            )
         with mock.patch.object(cache, "env_dinov3_model_id", return_value="new-model"):
-            self.assertTrue(cache._cache_needs_rewrite(item, ["a"], "float32", 2))
+            self.assertTrue(
+                cache._cache_needs_rewrite(item, ["a"], "float32", 2, sources)
+            )
 
     def test_atomic_write_reports_save_and_replace_failures(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

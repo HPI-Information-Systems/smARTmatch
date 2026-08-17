@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from unittest import mock
 
 import pyarrow as pa
@@ -13,10 +14,16 @@ from tests.matching_pipeline._shared_test_support import TemporaryPipelineTest
 
 class RankingArtifactTests(TemporaryPipelineTest):
     def test_write_schema_and_input_validation(self) -> None:
+        auction_digest = hashlib.sha256(b"auction").hexdigest()
+        lost_digest = hashlib.sha256(b"lost").hexdigest()
         output = rankings.write_auction_to_lost_rankings_parquet(
             "part-000000.parquet",
             auction_file_ids=[" a "],
+            auction_content_versions=[2],
+            auction_content_sha256=[auction_digest],
             lost_file_ids=[8],
+            lost_content_versions=[3],
+            lost_content_sha256=[lost_digest],
             ranks=["2"],
             blocking_scores=["0.25"],
         )
@@ -26,7 +33,11 @@ class RankingArtifactTests(TemporaryPipelineTest):
             pa.schema(
                 [
                     ("auction_file_id", pa.string()),
+                    ("auction_content_version", pa.int64()),
+                    ("auction_content_sha256", pa.string()),
                     ("lost_file_id", pa.string()),
+                    ("lost_content_version", pa.int64()),
+                    ("lost_content_sha256", pa.string()),
                     ("rank", pa.int16()),
                     ("blocking_score", pa.float32()),
                 ]
@@ -38,7 +49,11 @@ class RankingArtifactTests(TemporaryPipelineTest):
             rankings.write_auction_to_lost_rankings_parquet(
                 "part-bad.parquet",
                 auction_file_ids=["a"],
+                auction_content_versions=[1],
+                auction_content_sha256=[auction_digest],
                 lost_file_ids=[],
+                lost_content_versions=[],
+                lost_content_sha256=[],
                 ranks=[1],
                 blocking_scores=[0.5],
             )
@@ -53,6 +68,20 @@ class RankingArtifactTests(TemporaryPipelineTest):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(ValueError, message):
                     rankings._required_text(value, "field")
+
+        self.assertEqual(rankings._coerce_content_version("2", "version"), 2)
+        self.assertIsNone(rankings._coerce_content_version(None, "version"))
+        for value in ("bad", 0):
+            with self.subTest(content_version=value):
+                with self.assertRaisesRegex(ValueError, "version"):
+                    rankings._coerce_content_version(value, "version")
+        digest = hashlib.sha256(b"image").hexdigest()
+        self.assertEqual(
+            rankings._coerce_content_sha256(digest.upper(), "digest"),
+            digest,
+        )
+        with self.assertRaisesRegex(ValueError, "64 hexadecimal"):
+            rankings._coerce_content_sha256("bad", "digest")
 
         self.assertEqual(rankings._coerce_rank("1"), 1)
         self.assertEqual(rankings._coerce_rank(32767), 32767)

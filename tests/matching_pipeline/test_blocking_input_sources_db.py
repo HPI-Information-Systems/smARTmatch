@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from _blocking_test_support import Connection, Cursor
+
 from matching_pipeline.image_blocking import input_sources
 from matching_pipeline.image_blocking.config import AUCTION_ROLE, LOST_ROLE
 from matching_pipeline.image_blocking.input_sources import ImageFileRow
@@ -74,11 +75,12 @@ class InputSourceDatabaseTests(unittest.TestCase):
                     input_sources.has_unprocessed_auction_image_file_rows(), value
                 )
             self.assertIn("SELECT EXISTS", conn.used[0].executions[0][0])
+            self.assertIn("img.is_embedded = false", conn.used[0].executions[0][0])
 
         input_sources._require_image_file_path_column(
             Connection([Cursor(one=(True,))])
         )
-        with self.assertRaisesRegex(RuntimeError, "image_file.file_path is required"):
+        with self.assertRaisesRegex(RuntimeError, "content_version.*migration 24"):
             input_sources._require_image_file_path_column(
                 Connection([Cursor(one=(False,))])
             )
@@ -89,8 +91,8 @@ class InputSourceDatabaseTests(unittest.TestCase):
             conn = Connection(
                 [
                     Cursor(one=(True,)),
-                    Cursor(rows=[("lost", "lost.jpg")]),
-                    Cursor(rows=[("auction", "auction.jpg")]),
+                    Cursor(rows=[("lost", "lost.jpg", True, 3, "a" * 64)]),
+                    Cursor(rows=[("auction", "auction.jpg", False, 4, "b" * 64)]),
                 ]
             )
             with mock.patch.object(
@@ -103,8 +105,30 @@ class InputSourceDatabaseTests(unittest.TestCase):
                     validate_files=False,
                 )
 
-            self.assertEqual(lost, [ImageFileRow("lost", root / "lost.jpg")])
-            self.assertEqual(auction, [ImageFileRow("auction", root / "auction.jpg")])
+            self.assertEqual(
+                lost,
+                [
+                    ImageFileRow(
+                        "lost",
+                        root / "lost.jpg",
+                        is_embedded=True,
+                        content_version=3,
+                        content_sha256="a" * 64,
+                    )
+                ],
+            )
+            self.assertEqual(
+                auction,
+                [
+                    ImageFileRow(
+                        "auction",
+                        root / "auction.jpg",
+                        is_embedded=False,
+                        content_version=4,
+                        content_sha256="b" * 64,
+                    )
+                ],
+            )
             self.assertEqual(conn.used[1].executions[0][1], (2,))
             self.assertEqual(conn.used[2].executions[0][1], (3,))
             self.assertIn("WITH selected_auction_artwork", conn.used[2].executions[0][0])
@@ -153,14 +177,21 @@ class InputSourceDatabaseTests(unittest.TestCase):
         self.assertIn("lost_artwork_image_file", lost)
         self.assertIn("img.cleaned_up_at IS NULL", lost)
         self.assertIn("img.file_path IS NOT NULL", lost)
+        self.assertIn("img.is_embedded", lost)
+        self.assertIn("img.content_version", lost)
+        self.assertIn("img.content_sha256", lost)
 
         unprocessed = input_sources._db_query(AUCTION_ROLE, False)
         processed = input_sources._db_query(AUCTION_ROLE, True)
+        self.assertIn("img.is_embedded = false", unprocessed)
         self.assertIn("is_image_matching_processed = false", unprocessed)
         self.assertIn("is_image_matching_completed_without_error = false", unprocessed)
         self.assertIn("FROM match_score score", unprocessed)
         self.assertIn("img.cleaned_up_at IS NULL", unprocessed)
         self.assertIn("img.file_path IS NOT NULL", unprocessed)
+        self.assertIn("img.is_embedded", unprocessed)
+        self.assertIn("img.content_version", unprocessed)
+        self.assertIn("img.content_sha256", unprocessed)
         self.assertNotIn("is_image_matching_processed = false", processed)
         self.assertNotIn("is_image_matching_completed_without_error", processed)
 
@@ -171,6 +202,8 @@ class InputSourceDatabaseTests(unittest.TestCase):
             True, use_auction_artwork_limit=True
         )
         self.assertIn("WITH selected_auction_artwork", limited_unprocessed)
+        self.assertIn("selected_image.is_embedded = false", limited_unprocessed)
+        self.assertIn("img.is_embedded = false", limited_unprocessed)
         self.assertIn("aaif.is_image_matching_processed = false", limited_unprocessed)
         self.assertIn(
             "aaif.is_image_matching_completed_without_error = false",
@@ -180,6 +213,8 @@ class InputSourceDatabaseTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "Unsupported role"):
             input_sources._db_query("invalid", False)
+        with self.assertRaisesRegex(ValueError, "Unsupported image SQL alias"):
+            input_sources._auction_image_state_filter(False, image_alias="unsafe")
 
     def test_db_path_validation_and_absolute_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

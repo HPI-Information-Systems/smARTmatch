@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
 
-from matching_pipeline.shared.env import env_hf_token, env_image_root
 from matching_pipeline.shared.artifacts import write_image_files_parquet
+from matching_pipeline.shared.env import env_hf_token, env_image_root
 from shared.image_storage_lock import image_storage_lock
 
 from .candidate_generation import clear_candidate_parts, write_candidate_parts
@@ -26,8 +26,12 @@ from .config import (
     lost_embedding_cache_path,
     matching_batch_size_from_env,
 )
-from .db_updates import mark_image_files_embedded
-from .embedding_cache import ensure_lost_embedding_cache, load_dino_adapter_class
+from .db_updates import ExpectedImageVersion, mark_image_files_embedded
+from .embedding_cache import (
+    ensure_lost_embedding_cache,
+    load_dino_adapter_class,
+    source_identity_sha256,
+)
 from .input_sources import (
     ImageFileRow,
     has_unprocessed_auction_image_file_rows,
@@ -200,13 +204,17 @@ def run_image_blocking(
     model = _ModelProvider(no_compile=no_compile, hf_token=hf_token)
     cache_started_at = perf_counter()
     logger.info("Preparing lost embedding cache at %s", lost_embedding_cache_path())
-    lost_cache = ensure_lost_embedding_cache(
-        lost_rows,
-        cache_path=lost_embedding_cache_path(),
-        model_factory=model.get,
-        batch_size=image_batch_size,
-        dtype=dtype,
-    )
+    try:
+        lost_cache = ensure_lost_embedding_cache(
+            lost_rows,
+            cache_path=lost_embedding_cache_path(),
+            model_factory=model.get,
+            batch_size=image_batch_size,
+            dtype=dtype,
+        )
+    except Exception:
+        clear_candidate_parts(candidate_dir())
+        raise
     logger.info(
         "Lost embedding cache ready in %.1fs: embeddings=%d, dim=%d, generated=%d",
         perf_counter() - cache_started_at,
@@ -215,6 +223,14 @@ def run_image_blocking(
         int(lost_cache.metadata.get("generated_count", 0)),
     )
     candidate_started_at = perf_counter()
+    lost_source_identity = _candidate_lost_source_identity(lost_cache.metadata)
+    lost_content_sha256 = _candidate_lost_content_sha256(
+        lost_cache.metadata,
+        lost_cache.file_ids,
+    )
+    lost_content_versions = {
+        row.file_id: row.content_version for row in lost_rows
+    }
     candidate_count, part_count, skipped_count = _write_candidates(
         auction_rows,
         lost_cache.file_ids,
@@ -223,7 +239,14 @@ def run_image_blocking(
         top_k,
         image_batch_size,
         candidate_shard_auction_images,
+        model_identity=_candidate_model_identity(lost_cache.metadata),
+        lost_source_identity=lost_source_identity,
+        lost_content_versions=lost_content_versions,
+        lost_content_sha256=lost_content_sha256,
     )
+    if source_identity_sha256(lost_rows) != lost_source_identity:
+        clear_candidate_parts(candidate_dir())
+        raise RuntimeError("Lost images changed during candidate generation")
     logger.info(
         "Candidate generation finished in %.1fs: candidates=%d, parts=%d, skipped_parts=%d",
         perf_counter() - candidate_started_at,
@@ -231,7 +254,11 @@ def run_image_blocking(
         part_count,
         skipped_count,
     )
-    embedded_count = _mark_embedded_after_blocking(input_csv, lost_cache.file_ids, auction_rows)
+    embedded_count = _mark_embedded_after_blocking(
+        input_csv,
+        lost_rows,
+        auction_rows,
+    )
     logger.info("Image blocking finished in %.1fs", perf_counter() - run_started_at)
     return BlockingRunResult(
         blocking_root(),
@@ -301,14 +328,67 @@ def _effective_auction_limit(
 
 def _mark_embedded_after_blocking(
     input_csv: Path | None,
-    lost_file_ids: list[str],
+    lost_rows: list[ImageFileRow],
     auction_rows: list[ImageFileRow],
 ) -> int:
     if input_csv is not None:
         logger.info("Skipping image_file.is_embedded DB update for CSV-backed blocking")
         return 0
-    image_file_ids = [*lost_file_ids, *(row.file_id for row in auction_rows)]
-    return mark_image_files_embedded(image_file_ids)
+    expected: list[ExpectedImageVersion] = []
+    for row in [*lost_rows, *auction_rows]:
+        if row.content_version is None:
+            raise ValueError(
+                "DB-backed blocking row is missing content_version: "
+                f"image_file_id={row.file_id}"
+            )
+        expected.append(ExpectedImageVersion(row.file_id, row.content_version))
+    return mark_image_files_embedded(expected)
+
+
+def _candidate_model_identity(metadata: dict[str, object]) -> str:
+    value = metadata.get("model_id")
+    identity = str(value).strip() if value is not None else ""
+    if not identity:
+        raise ValueError("Lost embedding cache is missing model_id metadata")
+    return identity
+
+
+def _candidate_lost_source_identity(metadata: dict[str, object]) -> str:
+    value = metadata.get("source_identity_sha256")
+    identity = str(value).strip() if value is not None else ""
+    if not identity:
+        raise ValueError(
+            "Lost embedding cache is missing source_identity_sha256 metadata"
+        )
+    return identity
+
+
+def _candidate_lost_content_sha256(
+    metadata: dict[str, object],
+    lost_file_ids: list[str],
+) -> dict[str, str]:
+    raw_identities = metadata.get("source_identities")
+    if not isinstance(raw_identities, dict):
+        raise ValueError("Lost embedding cache is missing source_identities metadata")
+    result: dict[str, str] = {}
+    for file_id in lost_file_ids:
+        raw_identity = raw_identities.get(file_id)
+        if not isinstance(raw_identity, dict):
+            raise ValueError(
+                "Lost embedding cache is missing a source identity for "
+                f"file_id={file_id}"
+            )
+        value = raw_identity.get("source_sha256")
+        digest = str(value).strip().lower() if value is not None else ""
+        if len(digest) != 64 or any(
+            character not in "0123456789abcdef" for character in digest
+        ):
+            raise ValueError(
+                "Lost embedding cache has an invalid source_sha256 for "
+                f"file_id={file_id}"
+            )
+        result[file_id] = digest
+    return result
 
 
 def _write_candidates(
@@ -319,12 +399,21 @@ def _write_candidates(
     top_k,
     image_batch_size,
     shard_size,
+    *,
+    model_identity: str,
+    lost_source_identity: str,
+    lost_content_versions: dict[str, int | None],
+    lost_content_sha256: dict[str, str],
 ) -> tuple[int, int, int]:
     return write_candidate_parts(
         auction_rows,
         lost_file_ids,
         lost_embeddings,
         model.get,
+        model_identity=model_identity,
+        lost_source_identity=lost_source_identity,
+        lost_content_versions=lost_content_versions,
+        lost_content_sha256=lost_content_sha256,
         top_k=top_k,
         image_batch_size=image_batch_size,
         shard_size=shard_size,

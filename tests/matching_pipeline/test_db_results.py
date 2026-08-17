@@ -31,11 +31,12 @@ class DbResultSqlTests(unittest.TestCase):
             ],
         )
 
-        self.assertIn("INSERT INTO match_score", cursor.sql)
-        self.assertIn("image_matching_confidence", cursor.sql)
-        self.assertIn("best_image_file_id", cursor.sql)
-        self.assertNotIn("image_sim", cursor.sql)
-        self.assertNotIn("image_confidence_score", cursor.sql)
+        self.assertIn("INSERT INTO match_score", cursor.executemany_sql)
+        self.assertIn("image_matching_confidence", cursor.executemany_sql)
+        self.assertIn("best_image_file_id", cursor.executemany_sql)
+        self.assertNotIn("image_sim", cursor.executemany_sql)
+        self.assertNotIn("image_confidence_score", cursor.executemany_sql)
+        self.assertIn("is_metadata_matching_processed = false", cursor.sql)
         self.assertEqual(len(cursor.rows), 1)
         self.assertEqual(cursor.rows[0][7], 10)
 
@@ -58,6 +59,7 @@ class _FakeCursor:
         self.sql = ""
         self.rows = []
         self.params = None
+        self.executemany_sql = ""
         self.fetchone_result = fetchone_result
 
     def execute(self, sql, params=None):
@@ -65,7 +67,7 @@ class _FakeCursor:
         self.params = params
 
     def executemany(self, sql, rows):
-        self.sql = sql
+        self.executemany_sql = sql
         self.rows = list(rows)
 
     def fetchone(self):

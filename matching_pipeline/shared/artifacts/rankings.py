@@ -37,17 +37,46 @@ def write_auction_to_lost_rankings_parquet(
     part_name: str,
     *,
     auction_file_ids: Sequence[str],
+    auction_content_versions: Sequence[int | None],
+    auction_content_sha256: Sequence[str],
     lost_file_ids: Sequence[str],
+    lost_content_versions: Sequence[int | None],
+    lost_content_sha256: Sequence[str],
     ranks: Sequence[int],
     blocking_scores: Sequence[float],
 ) -> Path:
     """Write one top-k auction-to-lost ranking part under `CACHE_DIR`."""
     output_path = _ranking_part_path(part_name)
-    _validate_equal_lengths(auction_file_ids, lost_file_ids, ranks, blocking_scores)
+    _validate_equal_lengths(
+        auction_file_ids,
+        auction_content_versions,
+        auction_content_sha256,
+        lost_file_ids,
+        lost_content_versions,
+        lost_content_sha256,
+        ranks,
+        blocking_scores,
+    )
     coerced_auction_ids = [
         _required_text(value, "auction_file_id") for value in auction_file_ids
     ]
+    coerced_auction_versions = [
+        _coerce_content_version(value, "auction_content_version")
+        for value in auction_content_versions
+    ]
+    coerced_auction_digests = [
+        _coerce_content_sha256(value, "auction_content_sha256")
+        for value in auction_content_sha256
+    ]
     coerced_lost_ids = [_required_text(value, "lost_file_id") for value in lost_file_ids]
+    coerced_lost_versions = [
+        _coerce_content_version(value, "lost_content_version")
+        for value in lost_content_versions
+    ]
+    coerced_lost_digests = [
+        _coerce_content_sha256(value, "lost_content_sha256")
+        for value in lost_content_sha256
+    ]
     coerced_ranks = [_coerce_rank(value) for value in ranks]
     coerced_scores = [_coerce_score(value) for value in blocking_scores]
 
@@ -55,14 +84,22 @@ def write_auction_to_lost_rankings_parquet(
     table = pa.table(
         {
             "auction_file_id": coerced_auction_ids,
+            "auction_content_version": coerced_auction_versions,
+            "auction_content_sha256": coerced_auction_digests,
             "lost_file_id": coerced_lost_ids,
+            "lost_content_version": coerced_lost_versions,
+            "lost_content_sha256": coerced_lost_digests,
             "rank": coerced_ranks,
             "blocking_score": coerced_scores,
         },
         schema=pa.schema(
             [
                 ("auction_file_id", pa.string()),
+                ("auction_content_version", pa.int64()),
+                ("auction_content_sha256", pa.string()),
                 ("lost_file_id", pa.string()),
+                ("lost_content_version", pa.int64()),
+                ("lost_content_sha256", pa.string()),
                 ("rank", pa.int16()),
                 ("blocking_score", pa.float32()),
             ]
@@ -241,6 +278,29 @@ def _required_text(value: object, field_name: str) -> str:
     if not text:
         raise ValueError(f"Empty {field_name} in ranking artifact")
     return text
+
+
+def _coerce_content_version(value: object, field_name: str) -> int | None:
+    if value is None or not str(value).strip():
+        return None
+    try:
+        version = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid {field_name}: {value!r}") from exc
+    if version <= 0:
+        raise ValueError(f"{field_name} must be positive: {version}")
+    return version
+
+
+def _coerce_content_sha256(value: object, field_name: str) -> str:
+    digest = _required_text(value, field_name).lower()
+    if len(digest) != 64 or any(
+        character not in "0123456789abcdef" for character in digest
+    ):
+        raise ValueError(
+            f"{field_name} must contain 64 hexadecimal characters: {digest!r}"
+        )
+    return digest
 
 
 def _coerce_rank(value: object) -> int:

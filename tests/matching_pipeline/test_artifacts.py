@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 import tempfile
@@ -16,7 +17,6 @@ sys.modules.setdefault(
     types.SimpleNamespace(load_dotenv=lambda *args, **kwargs: False),
 )
 
-from matching_pipeline.shared.env import env_image_files_parquet_path  # noqa: E402
 from matching_pipeline.shared.artifacts import (  # noqa: E402
     load_auction_to_lost_rankings_with_paths,
     read_image_files_parquet,
@@ -24,6 +24,7 @@ from matching_pipeline.shared.artifacts import (  # noqa: E402
     write_auction_to_lost_rankings_parquet,
     write_image_files_parquet,
 )
+from matching_pipeline.shared.env import env_image_files_parquet_path  # noqa: E402
 
 
 class ArtifactParquetTests(unittest.TestCase):
@@ -65,7 +66,17 @@ class ArtifactParquetTests(unittest.TestCase):
             write_auction_to_lost_rankings_parquet(
                 "part-000000.parquet",
                 auction_file_ids=["a1", "a1"],
+                auction_content_versions=[2, 2],
+                auction_content_sha256=[
+                    hashlib.sha256(b"auction").hexdigest(),
+                    hashlib.sha256(b"auction").hexdigest(),
+                ],
                 lost_file_ids=["l2", "l1"],
+                lost_content_versions=[3, 4],
+                lost_content_sha256=[
+                    hashlib.sha256(b"lost-2").hexdigest(),
+                    hashlib.sha256(b"lost-1").hexdigest(),
+                ],
                 ranks=[2, 1],
                 blocking_scores=[0.25, 0.5],
             )

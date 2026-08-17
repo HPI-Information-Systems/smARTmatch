@@ -10,7 +10,19 @@ from datetime import date, datetime
 from typing import List, Optional
 from uuid import uuid4
 
-from sqlalchemy import ARRAY, JSON, Boolean, Date, Float, ForeignKey, Integer, SmallInteger, String, Text
+from sqlalchemy import (
+    ARRAY,
+    JSON,
+    BigInteger,
+    Boolean,
+    Date,
+    Float,
+    ForeignKey,
+    Integer,
+    SmallInteger,
+    String,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import TIMESTAMP, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -22,12 +34,18 @@ class Base(DeclarativeBase):
 class Artist(Base):
     __tablename__ = "artist"
 
-    artist_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    artist_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     complete_name: Mapped[str] = mapped_column(String(255), nullable=False)
     date_of_birth: Mapped[Optional[date]] = mapped_column(Date)
     date_of_death: Mapped[Optional[date]] = mapped_column(Date)
-    place_of_birth: Mapped[Optional[UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("location.location_id", ondelete="SET NULL"))
-    place_of_death: Mapped[Optional[UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("location.location_id", ondelete="SET NULL"))
+    place_of_birth: Mapped[Optional[UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("location.location_id", ondelete="SET NULL")
+    )
+    place_of_death: Mapped[Optional[UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("location.location_id", ondelete="SET NULL")
+    )
     raw_data: Mapped[Optional[str]] = mapped_column(Text)
     gender: Mapped[Optional[str]] = mapped_column(String(20))
     period_of_activity: Mapped[Optional[str]] = mapped_column(String(255))
@@ -36,39 +54,67 @@ class Artist(Base):
     title_of_nobility: Mapped[Optional[str]] = mapped_column(String(255))
     profession: Mapped[Optional[str]] = mapped_column(Text)
     biographical_info: Mapped[Optional[str]] = mapped_column(Text)
-    associated_country_ids: Mapped[List[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), nullable=False, default=list)
-    activity_place_ids: Mapped[List[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), nullable=False, default=list)
+    associated_country_ids: Mapped[List[UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), nullable=False, default=list
+    )
+    activity_place_ids: Mapped[List[UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), nullable=False, default=list
+    )
 
-    birth_location: Mapped[Optional["Location"]] = relationship("Location", foreign_keys=[place_of_birth])
-    death_location: Mapped[Optional["Location"]] = relationship("Location", foreign_keys=[place_of_death])
+    birth_location: Mapped[Optional["Location"]] = relationship(
+        "Location", foreign_keys=[place_of_birth]
+    )
+    death_location: Mapped[Optional["Location"]] = relationship(
+        "Location", foreign_keys=[place_of_death]
+    )
 
-    artist_name_variants: Mapped[List["ArtistNameVariants"]] = relationship("ArtistNameVariants", overlaps="artist")
-    auction_artworks: Mapped[List["AuctionArtwork"]] = relationship("AuctionArtwork", overlaps="artist")
+    artist_name_variants: Mapped[List["ArtistNameVariants"]] = relationship(
+        "ArtistNameVariants", overlaps="artist"
+    )
+    auction_artworks: Mapped[List["AuctionArtwork"]] = relationship(
+        "AuctionArtwork", overlaps="artist"
+    )
 
 
 class ArtistNameVariants(Base):
     __tablename__ = "artist_name_variants"
 
-    name_variant_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    artist_id: Mapped[Optional[UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("artist.artist_id", ondelete="CASCADE"))
+    name_variant_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    artist_id: Mapped[Optional[UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("artist.artist_id", ondelete="CASCADE")
+    )
     name_variant: Mapped[str] = mapped_column(String(255), nullable=False)
 
-    artist: Mapped[Optional["Artist"]] = relationship("Artist", foreign_keys=[artist_id])
+    artist: Mapped[Optional["Artist"]] = relationship(
+        "Artist", foreign_keys=[artist_id]
+    )
 
 
 class AuctionArtwork(Base):
     __tablename__ = "auction_artwork"
 
-    auction_artwork_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow)
+    auction_artwork_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow
+    )
     normalised_version: Mapped[Optional[int]] = mapped_column(Integer)
     title: Mapped[Optional[str]] = mapped_column(Text)
-    artist_id: Mapped[Optional[UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("artist.artist_id", ondelete="SET NULL"))
+    artist_id: Mapped[Optional[UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("artist.artist_id", ondelete="SET NULL")
+    )
     artist_full_name: Mapped[Optional[str]] = mapped_column(String(255))
     artist_birth_date: Mapped[Optional[date]] = mapped_column(Date)
     artist_death_date: Mapped[Optional[date]] = mapped_column(Date)
-    artist_birth_place: Mapped[Optional[UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("location.location_id", ondelete="SET NULL"))
-    artist_death_place: Mapped[Optional[UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("location.location_id", ondelete="SET NULL"))
+    artist_birth_place: Mapped[Optional[UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("location.location_id", ondelete="SET NULL")
+    )
+    artist_death_place: Mapped[Optional[UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("location.location_id", ondelete="SET NULL")
+    )
     width: Mapped[Optional[float]] = mapped_column(Float)
     height: Mapped[Optional[float]] = mapped_column(Float)
     width_frame: Mapped[Optional[float]] = mapped_column(Float)
@@ -86,9 +132,16 @@ class AuctionArtwork(Base):
     auction_date: Mapped[Optional[date]] = mapped_column(Date)
     lot_id: Mapped[Optional[str]] = mapped_column(String(255))
     lot_url: Mapped[Optional[str]] = mapped_column(Text)
-    auction_platform_id: Mapped[Optional[UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("auction_platform.auction_platform_id", ondelete="SET NULL"))
-    auctioneer_id: Mapped[Optional[UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("auctioneer.auctioneer_id", ondelete="SET NULL"))
-    expert_id: Mapped[Optional[UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("expert.expert_id", ondelete="SET NULL"))
+    auction_platform_id: Mapped[Optional[UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("auction_platform.auction_platform_id", ondelete="SET NULL"),
+    )
+    auctioneer_id: Mapped[Optional[UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("auctioneer.auctioneer_id", ondelete="SET NULL")
+    )
+    expert_id: Mapped[Optional[UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("expert.expert_id", ondelete="SET NULL")
+    )
     condition: Mapped[Optional[str]] = mapped_column(Text)
     signature: Mapped[Optional[str]] = mapped_column(Text)
     literature: Mapped[Optional[str]] = mapped_column(Text)
@@ -99,80 +152,140 @@ class AuctionArtwork(Base):
     place_of_birth_raw_data: Mapped[Optional[str]] = mapped_column(Text)
     place_of_death_raw_data: Mapped[Optional[str]] = mapped_column(Text)
     dimensions_raw_data: Mapped[Optional[str]] = mapped_column(Text)
-    is_metadata_matching_processed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    is_metadata_matching_processed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
-    is_metadata_extraction_processed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    is_metadata_extraction_processed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
-    is_image_matching_processed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    is_image_matching_processed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
+    is_metadata_matching_processed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    is_metadata_matching_processed_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+    is_metadata_extraction_processed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    is_metadata_extraction_processed_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+    is_image_matching_processed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    is_image_matching_processed_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
 
-    artist: Mapped[Optional["Artist"]] = relationship("Artist", foreign_keys=[artist_id])
-    artist_birth_place_obj: Mapped[Optional["Location"]] = relationship("Location", foreign_keys=[artist_birth_place])
-    artist_death_place_obj: Mapped[Optional["Location"]] = relationship("Location", foreign_keys=[artist_death_place])
-    auction_platform: Mapped[Optional["AuctionPlatform"]] = relationship("AuctionPlatform", foreign_keys=[auction_platform_id])
-    auctioneer: Mapped[Optional["Auctioneer"]] = relationship("Auctioneer", foreign_keys=[auctioneer_id])
-    expert: Mapped[Optional["Expert"]] = relationship("Expert", foreign_keys=[expert_id])
+    artist: Mapped[Optional["Artist"]] = relationship(
+        "Artist", foreign_keys=[artist_id]
+    )
+    artist_birth_place_obj: Mapped[Optional["Location"]] = relationship(
+        "Location", foreign_keys=[artist_birth_place]
+    )
+    artist_death_place_obj: Mapped[Optional["Location"]] = relationship(
+        "Location", foreign_keys=[artist_death_place]
+    )
+    auction_platform: Mapped[Optional["AuctionPlatform"]] = relationship(
+        "AuctionPlatform", foreign_keys=[auction_platform_id]
+    )
+    auctioneer: Mapped[Optional["Auctioneer"]] = relationship(
+        "Auctioneer", foreign_keys=[auctioneer_id]
+    )
+    expert: Mapped[Optional["Expert"]] = relationship(
+        "Expert", foreign_keys=[expert_id]
+    )
 
-    auction_artwork_image_files: Mapped[List["AuctionArtworkImageFile"]] = relationship("AuctionArtworkImageFile", overlaps="auction_artwork")
-    match_scores: Mapped[List["MatchScore"]] = relationship("MatchScore", overlaps="auction")
+    auction_artwork_image_files: Mapped[List["AuctionArtworkImageFile"]] = relationship(
+        "AuctionArtworkImageFile", overlaps="auction_artwork"
+    )
+    match_scores: Mapped[List["MatchScore"]] = relationship(
+        "MatchScore", overlaps="auction"
+    )
 
 
 class AuctionArtworkImageFile(Base):
     __tablename__ = "auction_artwork_image_file"
 
-    auction_artwork_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("auction_artwork.auction_artwork_id", ondelete="CASCADE"), primary_key=True)
-    image_file_id: Mapped[int] = mapped_column(Integer, ForeignKey("image_file.image_file_id", ondelete="CASCADE"), primary_key=True)
-    is_image_matching_processed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    is_image_matching_completed_without_error: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    auction_artwork_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("auction_artwork.auction_artwork_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    image_file_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("image_file.image_file_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    is_image_matching_processed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    is_image_matching_completed_without_error: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
 
-    auction_artwork: Mapped[Optional["AuctionArtwork"]] = relationship("AuctionArtwork", foreign_keys=[auction_artwork_id])
-    image_file: Mapped[Optional["ImageFile"]] = relationship("ImageFile", foreign_keys=[image_file_id])
+    auction_artwork: Mapped[Optional["AuctionArtwork"]] = relationship(
+        "AuctionArtwork", foreign_keys=[auction_artwork_id]
+    )
+    image_file: Mapped[Optional["ImageFile"]] = relationship(
+        "ImageFile", foreign_keys=[image_file_id]
+    )
 
 
 class AuctionPlatform(Base):
     __tablename__ = "auction_platform"
 
-    auction_platform_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    auction_platform_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     address: Mapped[Optional[str]] = mapped_column(String(255))
     phone: Mapped[Optional[str]] = mapped_column(String(50))
     email: Mapped[Optional[str]] = mapped_column(String(255))
     raw_data: Mapped[Optional[str]] = mapped_column(Text)
 
-    auction_artworks: Mapped[List["AuctionArtwork"]] = relationship("AuctionArtwork", overlaps="auction_platform")
+    auction_artworks: Mapped[List["AuctionArtwork"]] = relationship(
+        "AuctionArtwork", overlaps="auction_platform"
+    )
 
 
 class Auctioneer(Base):
     __tablename__ = "auctioneer"
 
-    auctioneer_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    auctioneer_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     address: Mapped[Optional[str]] = mapped_column(String(255))
     phone: Mapped[Optional[str]] = mapped_column(String(50))
     email: Mapped[Optional[str]] = mapped_column(String(255))
     raw_data: Mapped[Optional[str]] = mapped_column(Text)
 
-    auction_artworks: Mapped[List["AuctionArtwork"]] = relationship("AuctionArtwork", overlaps="auctioneer")
+    auction_artworks: Mapped[List["AuctionArtwork"]] = relationship(
+        "AuctionArtwork", overlaps="auctioneer"
+    )
 
 
 class Contact(Base):
     __tablename__ = "contact"
 
-    contact_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    contact_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     first_name: Mapped[str] = mapped_column(String(255), nullable=False)
     last_name: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[Optional[str]] = mapped_column(String(255))
     phone: Mapped[Optional[str]] = mapped_column(String(50))
     email: Mapped[Optional[str]] = mapped_column(String(255))
-    institution_id: Mapped[Optional[UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("institution.institution_id", ondelete="CASCADE"))
+    institution_id: Mapped[Optional[UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("institution.institution_id", ondelete="CASCADE")
+    )
 
-    institution: Mapped[Optional["Institution"]] = relationship("Institution", foreign_keys=[institution_id])
+    institution: Mapped[Optional["Institution"]] = relationship(
+        "Institution", foreign_keys=[institution_id]
+    )
 
 
 class Country(Base):
     __tablename__ = "country"
 
-    country_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    country_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     country_name: Mapped[str] = mapped_column(String(255), nullable=False)
     country_name_en: Mapped[Optional[str]] = mapped_column(String(255))
 
@@ -181,30 +294,48 @@ class DictMaterial(Base):
     __tablename__ = "dict_material"
 
     material_name: Mapped[str] = mapped_column(String(50), primary_key=True)
-    material_parent: Mapped[Optional[str]] = mapped_column(String(50), ForeignKey("dict_material.material_name", ondelete="SET NULL"))
+    material_parent: Mapped[Optional[str]] = mapped_column(
+        String(50), ForeignKey("dict_material.material_name", ondelete="SET NULL")
+    )
 
-    material_parent_obj: Mapped[Optional["DictMaterial"]] = relationship("DictMaterial", foreign_keys=[material_parent])
+    material_parent_obj: Mapped[Optional["DictMaterial"]] = relationship(
+        "DictMaterial", foreign_keys=[material_parent]
+    )
 
-    dict_materials: Mapped[List["DictMaterial"]] = relationship("DictMaterial", overlaps="material_parent_obj")
-    material_variants: Mapped[List["MaterialVariant"]] = relationship("MaterialVariant", overlaps="dict_material_name_obj")
+    dict_materials: Mapped[List["DictMaterial"]] = relationship(
+        "DictMaterial", overlaps="material_parent_obj"
+    )
+    material_variants: Mapped[List["MaterialVariant"]] = relationship(
+        "MaterialVariant", overlaps="dict_material_name_obj"
+    )
 
 
 class DictTechnique(Base):
     __tablename__ = "dict_technique"
 
     technique_name: Mapped[str] = mapped_column(String(50), primary_key=True)
-    technique_parent: Mapped[Optional[str]] = mapped_column(String(50), ForeignKey("dict_technique.technique_name", ondelete="SET NULL"))
+    technique_parent: Mapped[Optional[str]] = mapped_column(
+        String(50), ForeignKey("dict_technique.technique_name", ondelete="SET NULL")
+    )
 
-    technique_parent_obj: Mapped[Optional["DictTechnique"]] = relationship("DictTechnique", foreign_keys=[technique_parent])
+    technique_parent_obj: Mapped[Optional["DictTechnique"]] = relationship(
+        "DictTechnique", foreign_keys=[technique_parent]
+    )
 
-    dict_techniques: Mapped[List["DictTechnique"]] = relationship("DictTechnique", overlaps="technique_parent_obj")
-    technique_variants: Mapped[List["TechniqueVariant"]] = relationship("TechniqueVariant", overlaps="dict_technique_name_obj")
+    dict_techniques: Mapped[List["DictTechnique"]] = relationship(
+        "DictTechnique", overlaps="technique_parent_obj"
+    )
+    technique_variants: Mapped[List["TechniqueVariant"]] = relationship(
+        "TechniqueVariant", overlaps="dict_technique_name_obj"
+    )
 
 
 class Expert(Base):
     __tablename__ = "expert"
 
-    expert_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    expert_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     first_name: Mapped[str] = mapped_column(String(255), nullable=False)
     last_name: Mapped[str] = mapped_column(String(255), nullable=False)
     organization: Mapped[Optional[str]] = mapped_column(String(255))
@@ -212,59 +343,86 @@ class Expert(Base):
     email: Mapped[Optional[str]] = mapped_column(String(255))
     raw_data: Mapped[Optional[str]] = mapped_column(Text)
 
-    auction_artworks: Mapped[List["AuctionArtwork"]] = relationship("AuctionArtwork", overlaps="expert")
+    auction_artworks: Mapped[List["AuctionArtwork"]] = relationship(
+        "AuctionArtwork", overlaps="expert"
+    )
 
 
 class ImageFile(Base):
     __tablename__ = "image_file"
 
     image_file_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    file_path: Mapped[Optional[str]] = mapped_column(Text)
+    file_path: Mapped[Optional[str]] = mapped_column(Text, unique=True)
+    source_url: Mapped[Optional[str]] = mapped_column(Text)
+    content_sha256: Mapped[Optional[str]] = mapped_column(String(64))
+    content_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
     is_embedded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     cleaned_up_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
 
-    auction_artwork_image_files: Mapped[List["AuctionArtworkImageFile"]] = relationship("AuctionArtworkImageFile", overlaps="image_file")
-    lost_artwork_image_files: Mapped[List["LostArtworkImageFile"]] = relationship("LostArtworkImageFile", overlaps="image_file")
-    match_scores: Mapped[List["MatchScore"]] = relationship("MatchScore", overlaps="best_image_file")
+    auction_artwork_image_files: Mapped[List["AuctionArtworkImageFile"]] = relationship(
+        "AuctionArtworkImageFile", overlaps="image_file"
+    )
+    lost_artwork_image_files: Mapped[List["LostArtworkImageFile"]] = relationship(
+        "LostArtworkImageFile", overlaps="image_file"
+    )
+    match_scores: Mapped[List["MatchScore"]] = relationship(
+        "MatchScore", overlaps="best_image_file"
+    )
 
 
 class Institution(Base):
     __tablename__ = "institution"
 
-    institution_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    institution_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     address: Mapped[Optional[str]] = mapped_column(String(255))
     phone: Mapped[Optional[str]] = mapped_column(String(50))
     fax: Mapped[Optional[str]] = mapped_column(String(50))
     website: Mapped[Optional[str]] = mapped_column(String(255))
     email: Mapped[Optional[str]] = mapped_column(String(255))
-    contact_ids: Mapped[List[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
+    contact_ids: Mapped[List[UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), default=list
+    )
     raw_data: Mapped[Optional[str]] = mapped_column(Text)
 
     contacts: Mapped[List["Contact"]] = relationship("Contact", overlaps="institution")
-    lost_artworks: Mapped[List["LostArtwork"]] = relationship("LostArtwork", overlaps="institution")
+    lost_artworks: Mapped[List["LostArtwork"]] = relationship(
+        "LostArtwork", overlaps="institution"
+    )
 
 
 class LiteratureSource(Base):
     __tablename__ = "literature_source"
 
-    literature_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    literature_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     title: Mapped[str] = mapped_column(Text, nullable=False)
     author: Mapped[Optional[str]] = mapped_column(Text)
     publishing_date: Mapped[Optional[date]] = mapped_column(Date)
     publishing_location: Mapped[Optional[str]] = mapped_column(Text)
     raw_data: Mapped[Optional[str]] = mapped_column(Text)
-    publishing_location_id: Mapped[Optional[UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("location.location_id", ondelete="SET NULL"))
+    publishing_location_id: Mapped[Optional[UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("location.location_id", ondelete="SET NULL")
+    )
 
-    publishing_location: Mapped[Optional["Location"]] = relationship("Location", foreign_keys=[publishing_location_id])
+    publishing_location: Mapped[Optional["Location"]] = relationship(
+        "Location", foreign_keys=[publishing_location_id]
+    )
 
-    lost_artworks: Mapped[List["LostArtwork"]] = relationship("LostArtwork", overlaps="literature_source")
+    lost_artworks: Mapped[List["LostArtwork"]] = relationship(
+        "LostArtwork", overlaps="literature_source"
+    )
 
 
 class Location(Base):
     __tablename__ = "location"
 
-    location_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    location_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     location_name: Mapped[str] = mapped_column(String(255), nullable=False)
     location_name_en: Mapped[Optional[str]] = mapped_column(String(255))
     country: Mapped[Optional[str]] = mapped_column(String(255))
@@ -274,33 +432,69 @@ class Location(Base):
     lon: Mapped[Optional[float]] = mapped_column(Float)
     historical_info: Mapped[Optional[str]] = mapped_column(Text)
     display_name: Mapped[Optional[str]] = mapped_column(Text)
-    country_ids: Mapped[List[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), nullable=False, default=list)
+    country_ids: Mapped[List[UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), nullable=False, default=list
+    )
 
-    artists_via_birth_location: Mapped[List["Artist"]] = relationship("Artist", foreign_keys="[Artist.place_of_birth]", overlaps="birth_location")
-    artists_via_death_location: Mapped[List["Artist"]] = relationship("Artist", foreign_keys="[Artist.place_of_death]", overlaps="death_location")
-    auction_artworks_via_artist_birth_place_obj: Mapped[List["AuctionArtwork"]] = relationship("AuctionArtwork", foreign_keys="[AuctionArtwork.artist_birth_place]", overlaps="artist_birth_place_obj")
-    auction_artworks_via_artist_death_place_obj: Mapped[List["AuctionArtwork"]] = relationship("AuctionArtwork", foreign_keys="[AuctionArtwork.artist_death_place]", overlaps="artist_death_place_obj")
-    literature_sources: Mapped[List["LiteratureSource"]] = relationship("LiteratureSource", overlaps="publishing_location")
-    location_name_variants: Mapped[List["LocationNameVariants"]] = relationship("LocationNameVariants", overlaps="location")
+    artists_via_birth_location: Mapped[List["Artist"]] = relationship(
+        "Artist", foreign_keys="[Artist.place_of_birth]", overlaps="birth_location"
+    )
+    artists_via_death_location: Mapped[List["Artist"]] = relationship(
+        "Artist", foreign_keys="[Artist.place_of_death]", overlaps="death_location"
+    )
+    auction_artworks_via_artist_birth_place_obj: Mapped[List["AuctionArtwork"]] = (
+        relationship(
+            "AuctionArtwork",
+            foreign_keys="[AuctionArtwork.artist_birth_place]",
+            overlaps="artist_birth_place_obj",
+        )
+    )
+    auction_artworks_via_artist_death_place_obj: Mapped[List["AuctionArtwork"]] = (
+        relationship(
+            "AuctionArtwork",
+            foreign_keys="[AuctionArtwork.artist_death_place]",
+            overlaps="artist_death_place_obj",
+        )
+    )
+    literature_sources: Mapped[List["LiteratureSource"]] = relationship(
+        "LiteratureSource", overlaps="publishing_location"
+    )
+    location_name_variants: Mapped[List["LocationNameVariants"]] = relationship(
+        "LocationNameVariants", overlaps="location"
+    )
 
 
 class LocationNameVariants(Base):
     __tablename__ = "location_name_variants"
 
-    name_variant_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    location_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("location.location_id", ondelete="CASCADE"), nullable=False)
+    name_variant_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    location_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("location.location_id", ondelete="CASCADE"),
+        nullable=False,
+    )
     name_variant: Mapped[str] = mapped_column(String(255), nullable=False)
 
-    location: Mapped[Optional["Location"]] = relationship("Location", foreign_keys=[location_id])
+    location: Mapped[Optional["Location"]] = relationship(
+        "Location", foreign_keys=[location_id]
+    )
 
 
 class LostArtwork(Base):
     __tablename__ = "lost_artwork"
 
-    lost_artwork_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    lost_artwork_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     title: Mapped[Optional[str]] = mapped_column(Text)
-    artist_ids: Mapped[List[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
-    depicted_person_ids: Mapped[List[UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), nullable=False, default=list)
+    artist_ids: Mapped[List[UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), default=list
+    )
+    depicted_person_ids: Mapped[List[UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), nullable=False, default=list
+    )
     width: Mapped[Optional[float]] = mapped_column(Float)
     height: Mapped[Optional[float]] = mapped_column(Float)
     width_frame: Mapped[Optional[float]] = mapped_column(Float)
@@ -317,40 +511,77 @@ class LostArtwork(Base):
     technique: Mapped[Optional[str]] = mapped_column(String(255))
     dict_technique_name: Mapped[List[str]] = mapped_column(ARRAY(Text), default=list)
     provenance: Mapped[Optional[str]] = mapped_column(Text)
-    institution_id: Mapped[Optional[UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("institution.institution_id", ondelete="SET NULL"))
+    institution_id: Mapped[Optional[UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("institution.institution_id", ondelete="SET NULL"),
+    )
+    institution_classification: Mapped[Optional[str]] = mapped_column(Text)
     circumstances_of_loss: Mapped[Optional[str]] = mapped_column(Text)
     lost_art_id: Mapped[Optional[str]] = mapped_column(String(255))
     lost_art_url: Mapped[Optional[str]] = mapped_column(String(255))
-    keywords: Mapped[List[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
-    literature_source_id: Mapped[Optional[UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("literature_source.literature_id", ondelete="SET NULL"))
+    keywords: Mapped[List[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list
+    )
+    literature_source_id: Mapped[Optional[UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("literature_source.literature_id", ondelete="SET NULL"),
+    )
     literature_source_page: Mapped[Optional[int]] = mapped_column(SmallInteger)
     type_of_loss: Mapped[Optional[str]] = mapped_column(String(255))
     restituted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     raw_data: Mapped[Optional[dict]] = mapped_column(JSON)
     location_history: Mapped[Optional[dict]] = mapped_column(JSON)
 
-    institution: Mapped[Optional["Institution"]] = relationship("Institution", foreign_keys=[institution_id])
-    literature_source: Mapped[Optional["LiteratureSource"]] = relationship("LiteratureSource", foreign_keys=[literature_source_id])
+    institution: Mapped[Optional["Institution"]] = relationship(
+        "Institution", foreign_keys=[institution_id]
+    )
+    literature_source: Mapped[Optional["LiteratureSource"]] = relationship(
+        "LiteratureSource", foreign_keys=[literature_source_id]
+    )
 
-    lost_artwork_image_files: Mapped[List["LostArtworkImageFile"]] = relationship("LostArtworkImageFile", overlaps="lost_artwork")
-    match_scores: Mapped[List["MatchScore"]] = relationship("MatchScore", overlaps="lost")
+    lost_artwork_image_files: Mapped[List["LostArtworkImageFile"]] = relationship(
+        "LostArtworkImageFile", overlaps="lost_artwork"
+    )
+    match_scores: Mapped[List["MatchScore"]] = relationship(
+        "MatchScore", overlaps="lost"
+    )
 
 
 class LostArtworkImageFile(Base):
     __tablename__ = "lost_artwork_image_file"
 
-    lost_artwork_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("lost_artwork.lost_artwork_id", ondelete="CASCADE"), primary_key=True)
-    image_file_id: Mapped[int] = mapped_column(Integer, ForeignKey("image_file.image_file_id", ondelete="CASCADE"), primary_key=True)
+    lost_artwork_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("lost_artwork.lost_artwork_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    image_file_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("image_file.image_file_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
 
-    lost_artwork: Mapped[Optional["LostArtwork"]] = relationship("LostArtwork", foreign_keys=[lost_artwork_id])
-    image_file: Mapped[Optional["ImageFile"]] = relationship("ImageFile", foreign_keys=[image_file_id])
+    lost_artwork: Mapped[Optional["LostArtwork"]] = relationship(
+        "LostArtwork", foreign_keys=[lost_artwork_id]
+    )
+    image_file: Mapped[Optional["ImageFile"]] = relationship(
+        "ImageFile", foreign_keys=[image_file_id]
+    )
 
 
 class MatchScore(Base):
     __tablename__ = "match_score"
 
-    lost_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("lost_artwork.lost_artwork_id", ondelete="CASCADE"), primary_key=True)
-    auction_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("auction_artwork.auction_artwork_id", ondelete="CASCADE"), primary_key=True)
+    lost_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("lost_artwork.lost_artwork_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    auction_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("auction_artwork.auction_artwork_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
     title_sim: Mapped[Optional[float]] = mapped_column(Float)
     artist_sim: Mapped[Optional[float]] = mapped_column(Float)
     dating_sim: Mapped[Optional[float]] = mapped_column(Float)
@@ -359,71 +590,131 @@ class MatchScore(Base):
     technique_sim: Mapped[Optional[float]] = mapped_column(Float)
     metadata_final_score: Mapped[Optional[float]] = mapped_column(Float)
     metadata_confidence_score: Mapped[Optional[float]] = mapped_column(Float)
-    metadata_match_date: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), default=datetime.utcnow)
-    metadata_matching_program: Mapped[Optional[UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("matching_program.matching_program_id", ondelete="CASCADE"))
+    metadata_match_date: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), default=datetime.utcnow
+    )
+    metadata_matching_program: Mapped[Optional[UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("matching_program.matching_program_id", ondelete="CASCADE"),
+    )
     image_matching_confidence: Mapped[Optional[float]] = mapped_column(Float)
     image_final_score: Mapped[Optional[float]] = mapped_column(Float)
     image_blocking_similarity: Mapped[Optional[float]] = mapped_column(Float)
-    image_match_date: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), default=datetime.utcnow)
-    image_matching_program: Mapped[Optional[UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("matching_program.matching_program_id", ondelete="CASCADE"))
-    image_visualization: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    best_image_file_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("image_file.image_file_id", ondelete="SET NULL"))
+    image_match_date: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), default=datetime.utcnow
+    )
+    image_matching_program: Mapped[Optional[UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("matching_program.matching_program_id", ondelete="CASCADE"),
+    )
+    image_visualization: Mapped[dict] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    best_image_file_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("image_file.image_file_id", ondelete="SET NULL")
+    )
     rating: Mapped[Optional[int]] = mapped_column(SmallInteger)
     bookmarked: Mapped[Optional[bool]] = mapped_column(Boolean)
 
-    lost: Mapped[Optional["LostArtwork"]] = relationship("LostArtwork", foreign_keys=[lost_id])
-    auction: Mapped[Optional["AuctionArtwork"]] = relationship("AuctionArtwork", foreign_keys=[auction_id])
-    metadata_matching_program_obj: Mapped[Optional["MatchingProgram"]] = relationship("MatchingProgram", foreign_keys=[metadata_matching_program])
-    image_matching_program_obj: Mapped[Optional["MatchingProgram"]] = relationship("MatchingProgram", foreign_keys=[image_matching_program])
-    best_image_file: Mapped[Optional["ImageFile"]] = relationship("ImageFile", foreign_keys=[best_image_file_id])
+    lost: Mapped[Optional["LostArtwork"]] = relationship(
+        "LostArtwork", foreign_keys=[lost_id]
+    )
+    auction: Mapped[Optional["AuctionArtwork"]] = relationship(
+        "AuctionArtwork", foreign_keys=[auction_id]
+    )
+    metadata_matching_program_obj: Mapped[Optional["MatchingProgram"]] = relationship(
+        "MatchingProgram", foreign_keys=[metadata_matching_program]
+    )
+    image_matching_program_obj: Mapped[Optional["MatchingProgram"]] = relationship(
+        "MatchingProgram", foreign_keys=[image_matching_program]
+    )
+    best_image_file: Mapped[Optional["ImageFile"]] = relationship(
+        "ImageFile", foreign_keys=[best_image_file_id]
+    )
 
 
 class MatchingProgram(Base):
     __tablename__ = "matching_program"
 
-    matching_program_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    matching_program_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     name: Mapped[str] = mapped_column(String(50), nullable=False)
     version: Mapped[str] = mapped_column(String(50), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text)
 
-    match_scores_via_image_matching_program_obj: Mapped[List["MatchScore"]] = relationship("MatchScore", foreign_keys="[MatchScore.image_matching_program]", overlaps="image_matching_program_obj")
-    match_scores_via_metadata_matching_program_obj: Mapped[List["MatchScore"]] = relationship("MatchScore", foreign_keys="[MatchScore.metadata_matching_program]", overlaps="metadata_matching_program_obj")
+    match_scores_via_image_matching_program_obj: Mapped[List["MatchScore"]] = (
+        relationship(
+            "MatchScore",
+            foreign_keys="[MatchScore.image_matching_program]",
+            overlaps="image_matching_program_obj",
+        )
+    )
+    match_scores_via_metadata_matching_program_obj: Mapped[List["MatchScore"]] = (
+        relationship(
+            "MatchScore",
+            foreign_keys="[MatchScore.metadata_matching_program]",
+            overlaps="metadata_matching_program_obj",
+        )
+    )
 
 
 class MaterialVariant(Base):
     __tablename__ = "material_variant"
 
-    material_variant_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    dict_material_name: Mapped[str] = mapped_column(String(50), ForeignKey("dict_material.material_name", ondelete="CASCADE"), nullable=False)
+    material_variant_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    dict_material_name: Mapped[str] = mapped_column(
+        String(50),
+        ForeignKey("dict_material.material_name", ondelete="CASCADE"),
+        nullable=False,
+    )
     material_raw_data: Mapped[str] = mapped_column(String(50), nullable=False)
     match_type: Mapped[str] = mapped_column(String(50), nullable=False)
 
-    dict_material_name_obj: Mapped[Optional["DictMaterial"]] = relationship("DictMaterial", foreign_keys=[dict_material_name])
+    dict_material_name_obj: Mapped[Optional["DictMaterial"]] = relationship(
+        "DictMaterial", foreign_keys=[dict_material_name]
+    )
 
 
 class ScraperRun(Base):
     __tablename__ = "scraper_run"
 
-    run_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
     scraper_name: Mapped[str] = mapped_column(String(100), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
-    started_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow)
+    started_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow
+    )
     finished_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
-    entries_scraped: Mapped[int] = mapped_column(Integer, nullable=False)
-    entries_skipped: Mapped[int] = mapped_column(Integer, nullable=False)
-    total_entries: Mapped[int] = mapped_column(Integer, nullable=False)
+    entries_scraped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    entries_skipped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_entries: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     queue_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     queue_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    progress_updated_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
+    progress_updated_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
     error_message: Mapped[Optional[str]] = mapped_column(Text)
 
 
 class TechniqueVariant(Base):
     __tablename__ = "technique_variant"
 
-    technique_variant_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    dict_technique_name: Mapped[str] = mapped_column(String(50), ForeignKey("dict_technique.technique_name", ondelete="CASCADE"), nullable=False)
+    technique_variant_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    dict_technique_name: Mapped[str] = mapped_column(
+        String(50),
+        ForeignKey("dict_technique.technique_name", ondelete="CASCADE"),
+        nullable=False,
+    )
     technique_raw_data: Mapped[str] = mapped_column(String(50), nullable=False)
     match_type: Mapped[str] = mapped_column(String(50), nullable=False)
 
-    dict_technique_name_obj: Mapped[Optional["DictTechnique"]] = relationship("DictTechnique", foreign_keys=[dict_technique_name])
+    dict_technique_name_obj: Mapped[Optional["DictTechnique"]] = relationship(
+        "DictTechnique", foreign_keys=[dict_technique_name]
+    )

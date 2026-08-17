@@ -28,9 +28,10 @@ Set `MATCHING_WRITE_OUTPUT_CSV=1` only when a non-authoritative debug CSV is req
 
 ## Maintenance
 
-- PostgreSQL `match_score` and processed flags are authoritative.
-- `${CACHE_DIR}/sp_feats/*.pt` caches lost-image SuperPoint features.
-- Clear affected `sp_feats` while the scheduler is stopped after lost-image bytes, SuperPoint settings, feature dependencies, or CPU/GPU execution mode changes.
+- PostgreSQL `match_score` and processed flags are authoritative. When an image upsert leaves a written pair without a metadata score, the same transaction resets that artwork's metadata-matching flag and timestamp so the metadata stage visits the pair.
+- `${CACHE_DIR}/sp_feats/<lost_file_id>.<identity_sha256>.pt` caches lost-image SuperPoint features. The identity covers a SHA-256 fingerprint of the source bytes plus the cache schema, effective SuperPoint configuration and model-state hash, pinned LightGlue revision, feature dependency versions, resize policy, and CPU/GPU device type.
+- Cache payloads repeat that identity metadata and include a canonical feature-tensor digest. Metadata, required tensor keys, shapes, finite values, and the tensor digest are validated on read. Legacy, stale, malformed, corrupt, or interrupted entries are ignored; missing entries are regenerated and atomically installed without exposing partial files.
+- Content-addressed entries from old source/model identities are not reused. They may be removed as orphaned maintenance data while the scheduler is stopped.
 - Back up PostgreSQL and source images before classifier/model upgrades or any reprocessing.
 
 Monitor the persisted summary in `matching_pipeline` logs. Auction images with failed feature extraction or any failed candidate comparison remain pending, so later cycles retry them and filesystem cleanup cannot mistake a technical failure for a classifier rejection. Cache removal alone does not reset database state or remove old accepted scores. Before enabling cleanup on an existing database, apply `20_track_error_free_image_matching.sql`; it resets historical scoreless links for one corrected matching pass and adds the error-free completion marker required by cleanup.

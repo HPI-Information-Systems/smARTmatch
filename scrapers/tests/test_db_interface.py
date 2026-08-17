@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from sqlalchemy.exc import IntegrityError
 
-from scrapers.db_interface import Database, DatabaseError
+from scrapers.db_interface import Database, DatabaseError, _normalize_content_sha256
 
 
 class _ScalarResult:
@@ -266,6 +266,52 @@ class DatabaseCaseInsensitiveLookupTests(unittest.TestCase):
 
 
 class DatabaseAuctionArtworkTests(unittest.TestCase):
+    def test_content_digest_validation_and_existing_row_update(self) -> None:
+        digest = "A" * 64
+        self.assertEqual(_normalize_content_sha256(digest), digest.lower())
+        with self.assertRaisesRegex(ValueError, "64-character hexadecimal"):
+            _normalize_content_sha256("bad")
+
+        db = Database.__new__(Database)
+        executed: list[tuple[str, object]] = []
+
+        class FakeSession:
+            def execute(self, stmt, params=None):
+                executed.append((str(stmt), params))
+                return _ScalarResult()
+
+        db._get_session = lambda: FakeSession()  # type: ignore[attr-defined]
+        db._table_has_columns = lambda *_args, **_kwargs: True  # type: ignore[attr-defined]
+        db._image_file_id_by_path = lambda **_kwargs: 17  # type: ignore[attr-defined]
+
+        with patch(
+            "scrapers.db_interface._stored_image_content_sha256",
+            return_value="b" * 64,
+        ):
+            result = Database._ensure_image_file_id(
+                db,
+                file_path="image.jpg",
+                source_url="https://example.org/image.jpg",
+                content_sha256=digest,
+            )
+
+        self.assertEqual(result, 17)
+        self.assertEqual(len(executed), 2)
+        advisory_sql, advisory_params = executed[0]
+        self.assertIn("pg_advisory_xact_lock", advisory_sql)
+        self.assertEqual(advisory_params, {"file_path": "image.jpg"})
+        sql, params = executed[1]
+        self.assertIn("content_sha256 = :content_sha256", sql)
+        self.assertIn("content_sha256 is distinct from :content_sha256", sql)
+        self.assertEqual(
+            params,
+            {
+                "source_url": "https://example.org/image.jpg",
+                "content_sha256": "b" * 64,
+                "image_file_id": 17,
+            },
+        )
+
     def test_non_authoritative_legacy_reconcile_merges_successful_paths(self) -> None:
         db = Database.__new__(Database)
         updates: list[object] = []
@@ -389,6 +435,111 @@ class DatabaseAuctionArtworkTests(unittest.TestCase):
                 for sql in executed
             )
         )
+
+    def test_authoritative_empty_reconcile_invalidates_image_matching_state(
+        self,
+    ) -> None:
+        db = Database.__new__(Database)
+        executed: list[tuple[str, object]] = []
+
+        class ExistingImagesResult:
+            def scalars(self):
+                return self
+
+            def all(self):
+                return ["legacy-image-id"]
+
+        class FakeSession:
+            def execute(self, stmt, params=None):
+                sql = str(stmt)
+                executed.append((sql, params))
+                if "select image_file_id" in sql:
+                    return ExistingImagesResult()
+                return _ScalarResult()
+
+        columns = {
+            "auction_artwork_image_file": {
+                "auction_artwork_id",
+                "image_file_id",
+                "is_image_matching_processed",
+            },
+            "auction_artwork": {
+                "auction_artwork_id",
+                "is_image_matching_processed",
+                "is_image_matching_processed_at",
+            },
+            "match_score": {
+                "auction_id",
+                "metadata_final_score",
+                "image_matching_confidence",
+                "image_final_score",
+                "image_blocking_similarity",
+                "image_match_date",
+                "image_matching_program",
+                "image_visualization",
+                "best_image_file_id",
+            },
+        }
+        session = FakeSession()
+        db._get_session = lambda: session  # type: ignore[attr-defined]
+        db._table_has_columns = (  # type: ignore[attr-defined]
+            lambda *args, **kwargs: True
+        )
+        db._get_table_columns = (  # type: ignore[attr-defined]
+            lambda table: columns.get(table, set())
+        )
+
+        Database.set_auction_artwork_images(
+            db,
+            auction_artwork_id="artwork-id",
+            image_paths=[],
+            authoritative=True,
+        )
+
+        statements = [sql.lower() for sql, _ in executed]
+        score_update_index = next(
+            index
+            for index, sql in enumerate(statements)
+            if "update match_score set" in sql
+        )
+        score_delete_index = next(
+            index
+            for index, sql in enumerate(statements)
+            if "delete from match_score" in sql
+        )
+        link_delete_index = next(
+            index
+            for index, sql in enumerate(statements)
+            if "delete from auction_artwork_image_file" in sql
+        )
+        artwork_update_index = next(
+            index
+            for index, sql in enumerate(statements)
+            if "update auction_artwork set" in sql
+        )
+
+        score_update = statements[score_update_index]
+        self.assertIn("image_matching_confidence = null", score_update)
+        self.assertIn("image_final_score = null", score_update)
+        self.assertIn("image_blocking_similarity = null", score_update)
+        self.assertIn("image_matching_program = null", score_update)
+        self.assertIn("image_visualization = '{}'", score_update)
+        self.assertIn("best_image_file_id = null", score_update)
+        self.assertIn("metadata_final_score is not null", score_update)
+        self.assertIn("metadata_final_score is null", statements[score_delete_index])
+        self.assertLess(score_update_index, link_delete_index)
+        self.assertLess(score_delete_index, link_delete_index)
+        self.assertLess(link_delete_index, artwork_update_index)
+        self.assertIn(
+            "is_image_matching_processed = true", statements[artwork_update_index]
+        )
+        self.assertIn(
+            "is_image_matching_processed_at = current_timestamp",
+            statements[artwork_update_index],
+        )
+        for sql, params in executed:
+            if "match_score" in sql or "update auction_artwork set" in sql:
+                self.assertEqual(params, {"auction_artwork_id": "artwork-id"})
 
     def test_upsert_auction_artwork_filters_to_live_columns(self) -> None:
         db = Database.__new__(Database)

@@ -208,6 +208,48 @@ def _upsert_match_scores(
             for row in writes
         ],
     )
+    _invalidate_metadata_matching_for_image_only_pairs(cur, writes)
+
+
+def _invalidate_metadata_matching_for_image_only_pairs(
+    cur, writes: Sequence[ImageMatchScoreWrite]
+) -> None:
+    pairs = list(
+        dict.fromkeys(
+            (row.lost_artwork_id, row.auction_artwork_id) for row in writes
+        )
+    )
+    if not pairs:
+        return
+    cur.execute(
+        """
+        WITH written_pairs AS (
+            SELECT pair.lost_id, pair.auction_id
+            FROM unnest(%s::uuid[], %s::uuid[]) AS pair(lost_id, auction_id)
+        ), affected_auctions AS (
+            SELECT DISTINCT score.auction_id
+            FROM written_pairs pair
+            JOIN match_score score
+              ON score.lost_id = pair.lost_id
+             AND score.auction_id = pair.auction_id
+            WHERE score.metadata_final_score IS NULL
+              AND score.image_final_score IS NOT NULL
+        )
+        UPDATE auction_artwork artwork
+        SET is_metadata_matching_processed = false,
+            is_metadata_matching_processed_at = NULL
+        FROM affected_auctions affected
+        WHERE artwork.auction_artwork_id = affected.auction_id
+          AND (
+              artwork.is_metadata_matching_processed = true
+              OR artwork.is_metadata_matching_processed_at IS NOT NULL
+          )
+        """,
+        (
+            [lost_id for lost_id, _auction_id in pairs],
+            [auction_id for _lost_id, auction_id in pairs],
+        ),
+    )
 
 
 @dataclass(frozen=True)

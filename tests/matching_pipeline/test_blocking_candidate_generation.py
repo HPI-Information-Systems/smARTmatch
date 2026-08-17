@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,16 @@ import numpy as np
 from matching_pipeline.image_blocking import candidate_generation as candidates
 from matching_pipeline.image_blocking.input_sources import ImageFileRow
 from tests.matching_pipeline._blocking_cache_test_support import EmbeddingModel
+
+
+def _lost_kwargs(file_ids: list[str]) -> dict[str, object]:
+    return {
+        "lost_content_versions": {file_id: 1 for file_id in file_ids},
+        "lost_content_sha256": {
+            file_id: hashlib.sha256(file_id.encode()).hexdigest()
+            for file_id in file_ids
+        },
+    }
 
 
 class CandidateGenerationTests(unittest.TestCase):
@@ -39,10 +50,24 @@ class CandidateGenerationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp)
             rows = [ImageFileRow(f"a{i}", output / f"a{i}.jpg") for i in range(3)]
+            for index, row in enumerate(rows):
+                row.file_path.write_bytes(f"auction-{index}".encode())
             lost_ids = ["l0", "l1", "l2"]
             lost_embeddings = np.asarray([[1, 0], [0, 1], [-1, 0]], dtype=np.float32)
-            lost_digest = candidates._digest_strings(lost_ids)
-            resumed = candidates._part_path(output, 0, rows[:2], lost_digest, 2)
+            lost_embedding_identity = candidates._embedding_identity(
+                lost_ids,
+                lost_embeddings,
+                lost_source_identity="lost-source-v1",
+                lost_content_versions=[1, 1, 1],
+            )
+            resumed = candidates._part_path(
+                output,
+                0,
+                [candidates._image_identity(row) for row in rows[:2]],
+                lost_embedding_identity,
+                "test/dino-model",
+                2,
+            )
             resumed.write_bytes(b"complete")
             stale_zero = output / "part-000000-stale.parquet"
             stale_zero.write_bytes(b"stale")
@@ -75,6 +100,9 @@ class CandidateGenerationTests(unittest.TestCase):
                     lost_ids,
                     lost_embeddings,
                     factory,
+                    model_identity="test/dino-model",
+                    lost_source_identity="lost-source-v1",
+                    **_lost_kwargs(lost_ids),
                     top_k=2,
                     image_batch_size=1,
                     shard_size=2,
@@ -88,7 +116,17 @@ class CandidateGenerationTests(unittest.TestCase):
                 written[0][1],
                 {
                     "auction_file_ids": ["a2", "a2"],
+                    "auction_content_versions": [None, None],
+                    "auction_content_sha256": [
+                        hashlib.sha256(b"auction-2").hexdigest(),
+                        hashlib.sha256(b"auction-2").hexdigest(),
+                    ],
                     "lost_file_ids": ["l1", "l0"],
+                    "lost_content_versions": [1, 1],
+                    "lost_content_sha256": [
+                        hashlib.sha256(b"l1").hexdigest(),
+                        hashlib.sha256(b"l0").hexdigest(),
+                    ],
                     "ranks": [1, 2],
                     "blocking_scores": [1.0, 0.0],
                 },
@@ -98,7 +136,59 @@ class CandidateGenerationTests(unittest.TestCase):
             self.assertFalse(stale_one.exists())
             self.assertFalse(obsolete.exists())
             self.assertFalse(temporary.exists())
-            self.assertTrue(invalid.exists())
+            self.assertFalse(invalid.exists())
+
+    def test_database_invalidated_image_rebuilds_matching_candidate_part(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            image_path = output / "auction.jpg"
+            image_path.write_bytes(b"auction")
+            row = ImageFileRow("41", image_path, is_embedded=False)
+            lost_ids = ["lost"]
+            lost_embeddings = np.asarray([[1, 0]], dtype=np.float32)
+            lost_source_identity = "lost-source-v1"
+            existing = candidates._part_path(
+                output,
+                0,
+                [candidates._image_identity(row)],
+                candidates._embedding_identity(
+                    lost_ids,
+                    lost_embeddings,
+                    lost_source_identity=lost_source_identity,
+                    lost_content_versions=[1],
+                ),
+                "test/dino-model",
+                1,
+            )
+            existing.write_bytes(b"stale")
+            model = EmbeddingModel({str(image_path): [1, 0]})
+
+            def fake_write(name: str, **_columns: list) -> None:
+                (output / name).write_bytes(b"regenerated")
+
+            with mock.patch.object(
+                candidates, "env_auction_to_lost_rankings_dir", return_value=output
+            ), mock.patch.object(
+                candidates,
+                "write_auction_to_lost_rankings_parquet",
+                side_effect=fake_write,
+            ):
+                result = candidates.write_candidate_parts(
+                    [row],
+                    lost_ids,
+                    lost_embeddings,
+                    lambda: model,
+                    model_identity="test/dino-model",
+                    lost_source_identity=lost_source_identity,
+                    **_lost_kwargs(lost_ids),
+                    top_k=1,
+                    image_batch_size=1,
+                    shard_size=1,
+                )
+
+            self.assertEqual(result, (1, 1, 0))
+            self.assertEqual(existing.read_bytes(), b"regenerated")
+            self.assertEqual(model.calls, [[str(image_path)]])
 
     def test_empty_plan_removes_old_parts_without_loading_a_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -110,31 +200,274 @@ class CandidateGenerationTests(unittest.TestCase):
                 candidates, "env_auction_to_lost_rankings_dir", return_value=output
             ):
                 result = candidates.write_candidate_parts(
-                    [], [], np.empty((0, 2)), factory, top_k=5, image_batch_size=2, shard_size=3
+                    [],
+                    [],
+                    np.empty((0, 2)),
+                    factory,
+                    model_identity="test/dino-model",
+                    lost_source_identity="lost-source-v1",
+                    **_lost_kwargs([]),
+                    top_k=5,
+                    image_batch_size=2,
+                    shard_size=3,
                 )
             self.assertEqual(result, (0, 0, 0))
             self.assertFalse(old.exists())
             factory.assert_not_called()
 
-    def test_candidate_helpers_cover_digests_indices_and_empty_columns(self) -> None:
+    def test_identity_failure_clears_stale_parts_before_failing(self) -> None:
+        cases = (
+            (
+                [ImageFileRow("auction", Path("missing.jpg"))],
+                ["lost"],
+                np.asarray([[1.0, 0.0]], dtype=np.float32),
+                (FileNotFoundError, "missing.jpg"),
+            ),
+            (
+                [],
+                ["lost"],
+                np.asarray([[np.nan, 0.0]], dtype=np.float32),
+                (ValueError, "NaN or infinite"),
+            ),
+        )
+        for rows, lost_ids, embeddings, expected in cases:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp)
+                stale = output / "part-000000-stale.parquet"
+                stale.write_bytes(b"stale")
+                factory = mock.Mock(side_effect=AssertionError("model must not load"))
+                with mock.patch.object(
+                    candidates,
+                    "env_auction_to_lost_rankings_dir",
+                    return_value=output,
+                ):
+                    with self.assertRaisesRegex(*expected):
+                        candidates.write_candidate_parts(
+                            rows,
+                            lost_ids,
+                            embeddings,
+                            factory,
+                            model_identity="test/dino-model",
+                            lost_source_identity="lost-source-v1",
+                            **_lost_kwargs(lost_ids),
+                            top_k=1,
+                            image_batch_size=1,
+                            shard_size=1,
+                        )
+                self.assertFalse(stale.exists())
+                factory.assert_not_called()
+
+    def test_database_digest_mismatch_clears_candidate_parts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            image_path = output / "auction.jpg"
+            image_path.write_bytes(b"current")
+            stale = output / "part-000000-stale.parquet"
+            stale.write_bytes(b"stale")
+            row = ImageFileRow(
+                "auction",
+                image_path,
+                content_version=8,
+                content_sha256=hashlib.sha256(b"previous").hexdigest(),
+            )
+
+            with mock.patch.object(
+                candidates,
+                "env_auction_to_lost_rankings_dir",
+                return_value=output,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "database digest"):
+                    candidates.write_candidate_parts(
+                        [row],
+                        ["lost"],
+                        np.asarray([[1.0, 0.0]], dtype=np.float32),
+                        mock.Mock(),
+                        model_identity="test/dino-model",
+                        lost_source_identity="lost-source-v1",
+                        **_lost_kwargs(["lost"]),
+                        top_k=1,
+                        image_batch_size=1,
+                        shard_size=1,
+                    )
+
+            self.assertFalse(stale.exists())
+
+    def test_source_change_during_generation_clears_candidate_parts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            image_path = output / "auction.jpg"
+            image_path.write_bytes(b"before")
+            rows = [ImageFileRow("auction", image_path)]
+
+            class MutatingModel:
+                def generate_embeddings_batch(self, _paths):
+                    image_path.write_bytes(b"after")
+                    return np.asarray([[1.0, 0.0]], dtype=np.float32)
+
+            with mock.patch.object(
+                candidates,
+                "env_auction_to_lost_rankings_dir",
+                return_value=output,
+            ), mock.patch.object(
+                candidates, "write_auction_to_lost_rankings_parquet"
+            ) as write:
+                with self.assertRaisesRegex(RuntimeError, "changed during"):
+                    candidates.write_candidate_parts(
+                        rows,
+                        ["lost"],
+                        np.asarray([[1.0, 0.0]], dtype=np.float32),
+                        MutatingModel,
+                        model_identity="test/dino-model",
+                        lost_source_identity="lost-source-v1",
+                        **_lost_kwargs(["lost"]),
+                        top_k=1,
+                        image_batch_size=1,
+                        shard_size=1,
+                    )
+
+            self.assertEqual(list(output.glob("part-*.parquet")), [])
+            write.assert_not_called()
+
+    def test_candidate_helpers_cover_identity_indices_and_empty_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            row = ImageFileRow("auction", root / "auction.jpg")
-            digest = candidates._digest_strings(["lost", 2])  # type: ignore[list-item]
-            first = candidates._part_path(root, 4, [row], digest, 1)
-            self.assertEqual(first, candidates._part_path(root, 4, [row], digest, 1))
-            self.assertNotEqual(first, candidates._part_path(root, 4, [row], digest, 2))
+            image_path = root / "auction.jpg"
+            image_path.write_bytes(b"auction-v1")
+            row = ImageFileRow("auction", image_path)
+            embeddings = np.asarray([[1.0, 0.0]], dtype=np.float32)
+            embedding_identity = candidates._embedding_identity(
+                ["lost"],
+                embeddings,
+                lost_source_identity="lost-source-v1",
+            )
+            image_identity = candidates._image_identity(row)
+            first = candidates._part_path(
+                root,
+                4,
+                [image_identity],
+                embedding_identity,
+                "model-v1",
+                1,
+            )
+            self.assertEqual(
+                first,
+                candidates._part_path(
+                    root,
+                    4,
+                    [image_identity],
+                    embedding_identity,
+                    "model-v1",
+                    1,
+                ),
+            )
+            self.assertNotEqual(
+                first,
+                candidates._part_path(
+                    root,
+                    4,
+                    [image_identity],
+                    embedding_identity,
+                    "model-v1",
+                    2,
+                ),
+            )
+            self.assertNotEqual(
+                first,
+                candidates._part_path(
+                    root,
+                    4,
+                    [image_identity],
+                    embedding_identity,
+                    "model-v2",
+                    1,
+                ),
+            )
+            changed_version = candidates._embedding_identity(
+                ["lost"],
+                embeddings,
+                lost_source_identity="lost-source-v1",
+                lost_content_versions=[2],
+            )
+            self.assertNotEqual(embedding_identity, changed_version)
+            changed_embeddings = candidates._embedding_identity(
+                ["lost"],
+                np.asarray([[0.0, 1.0]], dtype=np.float32),
+                lost_source_identity="lost-source-v1",
+            )
+            self.assertNotEqual(
+                first,
+                candidates._part_path(
+                    root,
+                    4,
+                    [image_identity],
+                    changed_embeddings,
+                    "model-v1",
+                    1,
+                ),
+            )
+            changed_lost_source = candidates._embedding_identity(
+                ["lost"],
+                embeddings,
+                lost_source_identity="lost-source-v2",
+            )
+            self.assertNotEqual(
+                first,
+                candidates._part_path(
+                    root,
+                    4,
+                    [image_identity],
+                    changed_lost_source,
+                    "model-v1",
+                    1,
+                ),
+            )
+            image_path.write_bytes(b"auction-v2")
+            changed_image_identity = candidates._image_identity(row)
+            self.assertNotEqual(
+                first,
+                candidates._part_path(
+                    root,
+                    4,
+                    [changed_image_identity],
+                    embedding_identity,
+                    "model-v1",
+                    1,
+                ),
+            )
+            alternate_path = root / "moved.jpg"
+            alternate_path.write_bytes(b"auction-v1")
+            moved_identity = candidates._image_identity(
+                ImageFileRow("auction", alternate_path)
+            )
+            self.assertNotEqual(
+                first,
+                candidates._part_path(
+                    root,
+                    4,
+                    [moved_identity],
+                    embedding_identity,
+                    "model-v1",
+                    1,
+                ),
+            )
             self.assertEqual(candidates._part_index(first), 4)
             self.assertIsNone(candidates._part_index(root / "part-bad.parquet"))
             self.assertIsNone(candidates._part_index(root / "other-1.parquet"))
             self.assertIsNone(candidates._part_index(root / "part"))
             self.assertEqual(candidates._part_count(5, 2), 3)
-            self.assertEqual(candidates._empty_candidate_columns(), {
-                "auction_file_ids": [],
-                "lost_file_ids": [],
-                "ranks": [],
-                "blocking_scores": [],
-            })
+            self.assertEqual(
+                candidates._empty_candidate_columns(),
+                {
+                    "auction_file_ids": [],
+                    "auction_content_versions": [],
+                    "auction_content_sha256": [],
+                    "lost_file_ids": [],
+                    "lost_content_versions": [],
+                    "lost_content_sha256": [],
+                    "ranks": [],
+                    "blocking_scores": [],
+                },
+            )
 
 
 if __name__ == "__main__":

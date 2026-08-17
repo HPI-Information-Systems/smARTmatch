@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -18,6 +19,9 @@ from .config import DEFAULT_EMBEDDING_DTYPE
 from .input_sources import ImageFileRow
 
 logger = logging.getLogger(__name__)
+
+_EMBEDDING_CACHE_SCHEMA_VERSION = 2
+_FINGERPRINT_CHUNK_SIZE = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -50,8 +54,17 @@ def ensure_lost_embedding_cache(
         batch_size,
         dtype,
     )
+    source_identities = _source_identities(rows)
     cached = load_lost_embedding_cache(cache_path)
-    cached_map = _valid_cached_embeddings(cached)
+    cached_map = _valid_cached_embeddings(cached, source_identities)
+    invalidated_ids = {row.file_id for row in rows if row.is_embedded is False}
+    for file_id in invalidated_ids:
+        cached_map.pop(file_id, None)
+    if invalidated_ids:
+        logger.info(
+            "Regenerating %d lost embeddings invalidated by database state",
+            len(invalidated_ids),
+        )
 
     missing = [row for row in rows if row.file_id not in cached_map]
     logger.info(
@@ -68,12 +81,25 @@ def ensure_lost_embedding_cache(
         generated[row.file_id] if row.file_id in generated else cached_map[row.file_id]
         for row in rows
     ]
+    if _source_identities(rows) != source_identities:
+        raise RuntimeError("Lost images changed during embedding cache preparation")
     embeddings = normalize_embeddings(np.stack(ordered).astype(np.float32))
     stored_embeddings = embeddings.astype(_numpy_dtype(dtype), copy=False)
     embedding_dim = int(embeddings.shape[1])
 
-    if missing or _cache_needs_rewrite(cached, file_ids, dtype, embedding_dim):
-        metadata = _metadata(dtype, len(file_ids), embedding_dim)
+    if missing or _cache_needs_rewrite(
+        cached,
+        file_ids,
+        dtype,
+        embedding_dim,
+        source_identities,
+    ):
+        metadata = _metadata(
+            dtype,
+            len(file_ids),
+            embedding_dim,
+            source_identities,
+        )
         logger.info(
             "Writing lost embedding cache: path=%s count=%d dim=%d dtype=%s",
             cache_path,
@@ -83,7 +109,11 @@ def ensure_lost_embedding_cache(
         )
         write_lost_embedding_cache(cache_path, file_ids, stored_embeddings, metadata)
     else:
-        metadata = cached.metadata if cached is not None else _metadata(dtype, len(file_ids), embedding_dim)
+        metadata = (
+            cached.metadata
+            if cached is not None
+            else _metadata(dtype, len(file_ids), embedding_dim, source_identities)
+        )
         logger.info("Lost embedding cache is already up to date")
 
     return LostEmbeddingCache(file_ids, embeddings, metadata | {"generated_count": len(missing)})
@@ -180,7 +210,74 @@ def _generate_embeddings(
     return generated
 
 
-def _valid_cached_embeddings(cache: LostEmbeddingCache | None) -> dict[str, np.ndarray]:
+def source_identity_sha256(rows: Sequence[ImageFileRow]) -> str:
+    """Fingerprint the current lost-image source set for downstream artifacts."""
+    return _source_identity_sha256(_source_identities(rows))
+
+
+def _source_identities(
+    rows: Sequence[ImageFileRow],
+) -> dict[str, dict[str, object]]:
+    identities: dict[str, dict[str, object]] = {}
+    for row in rows:
+        if row.file_id in identities:
+            raise ValueError(f"Duplicate lost image file_id: {row.file_id}")
+        raw_path = Path(row.file_path).expanduser()
+        absolute_path = raw_path.absolute()
+        resolved_path = raw_path.resolve(strict=True)
+        initial_stat = resolved_path.stat()
+        digest = hashlib.sha256()
+        with resolved_path.open("rb") as source:
+            while chunk := source.read(_FINGERPRINT_CHUNK_SIZE):
+                digest.update(chunk)
+        final_stat = resolved_path.stat()
+        if _stat_signature(initial_stat) != _stat_signature(final_stat):
+            raise RuntimeError(f"Lost image changed while fingerprinting: {raw_path}")
+        source_sha256 = digest.hexdigest()
+        if (
+            row.content_sha256 is not None
+            and row.content_sha256 != source_sha256
+        ):
+            raise RuntimeError(
+                "Lost image content does not match its database digest: "
+                f"image_file_id={row.file_id} path={raw_path}"
+            )
+        identities[row.file_id] = {
+            "file_path": str(absolute_path),
+            "resolved_file_path": str(resolved_path),
+            "source_size": initial_stat.st_size,
+            "source_sha256": source_sha256,
+            "content_version": row.content_version,
+        }
+    return identities
+
+
+def _source_identity_sha256(
+    source_identities: dict[str, dict[str, object]],
+) -> str:
+    serialized = json.dumps(
+        source_identities,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
+
+
+def _stat_signature(value) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _valid_cached_embeddings(
+    cache: LostEmbeddingCache | None,
+    source_identities: dict[str, dict[str, object]],
+) -> dict[str, np.ndarray]:
     if cache is None:
         return {}
     if cache.metadata.get("model_id") != env_dinov3_model_id():
@@ -198,8 +295,28 @@ def _valid_cached_embeddings(cache: LostEmbeddingCache | None) -> dict[str, np.n
             int(cache.embeddings.shape[1]),
         )
         return {}
+    cached_sources = cache.metadata.get("source_identities")
+    if not isinstance(cached_sources, dict):
+        logger.info("Ignoring lost embedding cache without source identities")
+        return {}
+    expected_source_digest = _source_identity_sha256(cached_sources)
+    if cache.metadata.get("source_identity_sha256") != expected_source_digest:
+        logger.info("Ignoring lost embedding cache with mismatched source digest")
+        return {}
     embeddings = normalize_embeddings(cache.embeddings, expected_dim=embedding_dim)
-    return dict(zip(cache.file_ids, embeddings, strict=True))
+    cached_map = dict(zip(cache.file_ids, embeddings, strict=True))
+    valid = {
+        file_id: embedding
+        for file_id, embedding in cached_map.items()
+        if cached_sources.get(file_id) == source_identities.get(file_id)
+    }
+    stale_count = len(cached_map) - len(valid)
+    if stale_count:
+        logger.info(
+            "Ignoring %d lost embeddings with changed source identity",
+            stale_count,
+        )
+    return valid
 
 
 def _cache_needs_rewrite(
@@ -207,6 +324,7 @@ def _cache_needs_rewrite(
     file_ids: Sequence[str],
     dtype: str,
     embedding_dim: int,
+    source_identities: dict[str, dict[str, object]],
 ) -> bool:
     if cache is None:
         return True
@@ -215,17 +333,27 @@ def _cache_needs_rewrite(
         or cache.metadata.get("dtype") != dtype
         or cache.metadata.get("model_id") != env_dinov3_model_id()
         or _metadata_embedding_dim(cache.metadata) != embedding_dim
+        or cache.metadata.get("source_identities") != source_identities
+        or cache.metadata.get("source_identity_sha256")
+        != _source_identity_sha256(source_identities)
     )
 
 
-def _metadata(dtype: str, count: int, embedding_dim: int) -> dict[str, object]:
+def _metadata(
+    dtype: str,
+    count: int,
+    embedding_dim: int,
+    source_identities: dict[str, dict[str, object]],
+) -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": _EMBEDDING_CACHE_SCHEMA_VERSION,
         "model_id": env_dinov3_model_id(),
         "embedding_dim": embedding_dim,
         "dtype": dtype,
         "normalized": True,
         "lost_image_count": count,
+        "source_identity_sha256": _source_identity_sha256(source_identities),
+        "source_identities": source_identities,
     }
 
 

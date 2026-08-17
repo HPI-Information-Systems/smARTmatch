@@ -12,13 +12,16 @@ from PIL import Image
 from transformers import AutoImageProcessor, AutoModel
 
 from matching_pipeline.shared.env import (
+    env_dinov3_model_id,
     env_hf_token,
     env_non_gpu_inference_allowed,
-    env_str,
 )
 
 TOKEN_POOLING_MODES = frozenset({"avg", "median", "min", "max"})
 POOLING_ALIASES = {"average": "avg", "mean": "avg"}
+# Pillow selects these decoders from the file signature, not the filename suffix.
+# Keep extensionless SPSG image paths supported while excluding other parsers.
+_INPUT_IMAGE_FORMATS = ("JPEG", "PNG", "WEBP", "GIF")
 logger = logging.getLogger(__name__)
 
 
@@ -128,31 +131,6 @@ def _aggregate_masked_tokens(
 
 
 class DinoV3Adapter:
-    SIZE_KEYS = ["s", "splus", "b", "l", "hplus", "7b"]
-    SIZE_KEY_ALIASES = {
-        "s+": "splus",
-        "vit-s+": "splus",
-        "h+": "hplus",
-        "vit-h+": "hplus",
-        "vit-7b": "7b",
-    }
-    MODEL_ID_BY_SIZE_KEY = {
-        "s": "facebook/dinov3-vits16-pretrain-lvd1689m",
-        "splus": "facebook/dinov3-vits16plus-pretrain-lvd1689m",
-        "b": "facebook/dinov3-vitb16-pretrain-lvd1689m",
-        "l": "facebook/dinov3-vitl16-pretrain-lvd1689m",
-        "hplus": "facebook/dinov3-vith16plus-pretrain-lvd1689m",
-        "7b": "facebook/dinov3-vit7b16-pretrain-lvd1689m",
-    }
-    SIZE_LABEL_BY_SIZE_KEY = {
-        "s": "ViT-S (21M)",
-        "splus": "ViT-S+ (29M)",
-        "b": "ViT-B (86M)",
-        "l": "ViT-L (300M)",
-        "hplus": "ViT-H+ (840M)",
-        "7b": "ViT-7B (6716M)",
-    }
-    DEFAULT_SIZE_KEY = "7b"
     DEFAULT_POOLING = "default"
     SUPPORTED_POOLINGS = frozenset({"default", "cls"}) | TOKEN_POOLING_MODES
     PAD_COLOR = pad_color_from_mean((0.485, 0.456, 0.406))
@@ -163,10 +141,8 @@ class DinoV3Adapter:
         hf_token: Optional[str] = None,
         geometry: Optional[ImageGeometry] = None,
         model_id: Optional[str] = None,
-        size_key: Optional[str] = None,
     ):
-        self.size_key = self._resolve_size_key(size_key)
-        self.model_id = self._resolve_model_id(model_id, size_key)
+        self.model_id = self._resolve_model_id(model_id)
         self.device = self._select_device()
         self.hf_token = env_hf_token(hf_token)
         self.geometry = geometry
@@ -213,30 +189,10 @@ class DinoV3Adapter:
             except Exception:
                 logger.warning("torch.compile() not available", exc_info=True)
 
-    @classmethod
-    def _resolve_size_key(cls, size_key: Optional[str]) -> str:
-        key = size_key or env_str("DINOV3_SIZE_KEY", cls.DEFAULT_SIZE_KEY)
-        normalized = cls.SIZE_KEY_ALIASES.get(key.strip().lower(), key.strip().lower())
-        if normalized not in cls.SIZE_KEYS:
-            valid = ", ".join(cls.SIZE_KEYS)
-            raise ValueError(
-                f"Unsupported DINOv3 size key {key!r}. Expected one of: {valid}"
-            )
-        return normalized
-
-    @classmethod
-    def _resolve_model_id(cls, model_id: Optional[str], size_key: Optional[str]) -> str:
-        if model_id:
-            return model_id
-        if size_key is None:
-            env_model_id = env_str("DINOV3_MODEL_ID")
-            if env_model_id:
-                return env_model_id
-        return cls.MODEL_ID_BY_SIZE_KEY[cls._resolve_size_key(size_key)]
-
-    @classmethod
-    def size_label(cls, size_key: str) -> str:
-        return cls.SIZE_LABEL_BY_SIZE_KEY[cls._resolve_size_key(size_key)]
+    @staticmethod
+    def _resolve_model_id(model_id: Optional[str]) -> str:
+        explicit = str(model_id).strip() if model_id is not None else ""
+        return explicit or env_dinov3_model_id()
 
     @staticmethod
     def _select_device() -> str:
@@ -344,7 +300,7 @@ class DinoV3Adapter:
         image_path: str,
         pooling: Sequence[str] | str | None = None,
     ):
-        image = Image.open(image_path).convert("RGB")
+        image = Image.open(image_path, formats=_INPUT_IMAGE_FORMATS).convert("RGB")
         return self.generate_embedding_from_pil(image, pooling)
 
     def generate_embedding_from_pil(
@@ -362,7 +318,10 @@ class DinoV3Adapter:
         image_paths: list[str],
         pooling: Sequence[str] | str | None = None,
     ):
-        images = [Image.open(path).convert("RGB") for path in image_paths]
+        images = [
+            Image.open(path, formats=_INPUT_IMAGE_FORMATS).convert("RGB")
+            for path in image_paths
+        ]
         return self.generate_embeddings_batch_from_pil(images, pooling)
 
     def generate_embeddings_batch_from_pil(

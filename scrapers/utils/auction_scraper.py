@@ -178,6 +178,7 @@ class AuctionPlatformScraper(Scraper):
         artwork_id: UUID | None = None,
     ) -> list[str]:
         self.last_downloaded_image_sources = {}
+        self.last_downloaded_image_content_sha256 = {}
         if not image_urls:
             self.last_image_download_complete = True
             return []
@@ -216,5 +217,6 @@ class AuctionPlatformScraper(Scraper):
             auction_artwork_id=artwork_id,
             image_paths=image_paths,
             image_source_urls=self.last_downloaded_image_sources,
+            image_content_sha256=self.last_downloaded_image_content_sha256,
             authoritative=self.last_image_download_complete,
         )

@@ -12,25 +12,27 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from abc import ABC, abstractmethod
 from io import BytesIO
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-import time
 from typing import Callable, Iterable, Optional, Sequence, Union
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from shared.logging_adapter import get_logger
 from scrapers.db_interface import Base, Database
 from scrapers.utils.image_storage import repository_root, safe_image_prefix
 from scrapers.utils.request_handler import request_image
-
+from shared.logging_adapter import get_logger
 
 ModelResult = Union[Base, Sequence[Base]]
 
 _MAX_IMAGE_WIDTH_PX = 2000
 _JPEG_QUALITY = 90
+# Pillow applies this allowlist using content signatures; a suffix is not required.
+_REMOTE_IMAGE_FORMATS = ("JPEG", "PNG", "WEBP", "GIF")
+_IMAGE_DIGEST_CHUNK_SIZE = 1024 * 1024
 logger = get_logger(__name__)
 
 
@@ -95,6 +97,7 @@ class Scraper(ABC):
         self.stats: dict = {"urls_total": 0, "urls_processed": 0}
         self.log_prefix = log_prefix
         self.last_downloaded_image_sources: dict[str, str] = {}
+        self.last_downloaded_image_content_sha256: dict[str, str] = {}
         self.last_image_download_complete = True
         # Optional observers set by the orchestrator. The pre-commit fence
         # prevents writes after a worker loses its cross-process ownership lock;
@@ -235,6 +238,7 @@ class Scraper(ABC):
 
         local_paths: list[str] = []
         self.last_downloaded_image_sources = {}
+        self.last_downloaded_image_content_sha256 = {}
         self.last_image_download_complete = True
         # de-duplicate while preserving order
         seen: set[str] = set()
@@ -257,6 +261,9 @@ class Scraper(ABC):
                     relative_path = _relative_path(filepath)
                     local_paths.append(relative_path)
                     self.last_downloaded_image_sources[relative_path] = url
+                    self.last_downloaded_image_content_sha256[relative_path] = (
+                        _sha256_file(filepath)
+                    )
                     continue
                 if filepath.exists():
                     self.log(f"[retry] invalid cached image {filepath}")
@@ -278,6 +285,9 @@ class Scraper(ABC):
                 relative_path = _relative_path(filepath)
                 local_paths.append(relative_path)
                 self.last_downloaded_image_sources[relative_path] = url
+                self.last_downloaded_image_content_sha256[relative_path] = (
+                    hashlib.sha256(jpeg_bytes).hexdigest()
+                )
             except Exception as exc:
                 self.last_image_download_complete = False
                 self.log(f"[skip] image {url} ({type(exc).__name__})")
@@ -286,9 +296,17 @@ class Scraper(ABC):
         return local_paths
 
 
+def _sha256_file(filepath: Path) -> str:
+    digest = hashlib.sha256()
+    with filepath.open("rb") as source:
+        while chunk := source.read(_IMAGE_DIGEST_CHUNK_SIZE):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _is_valid_cached_jpeg(filepath: Path) -> bool:
     try:
-        with Image.open(filepath) as image:
+        with Image.open(filepath, formats=("JPEG",)) as image:
             image.verify()
             return image.format == "JPEG"
     except (OSError, UnidentifiedImageError, ValueError):
@@ -317,7 +335,7 @@ def _to_jpeg_bytes(raw_bytes: bytes) -> bytes | None:
     """Convert image bytes to JPEG and downscale width to <= 2000 px."""
 
     try:
-        with Image.open(BytesIO(raw_bytes)) as image:
+        with Image.open(BytesIO(raw_bytes), formats=_REMOTE_IMAGE_FORMATS) as image:
             image = ImageOps.exif_transpose(image)
 
             width, height = image.size

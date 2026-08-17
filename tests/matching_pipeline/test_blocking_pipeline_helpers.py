@@ -8,8 +8,10 @@ from pathlib import Path
 from unittest import mock
 
 from _blocking_test_support import patched_dirs
+
 from matching_pipeline.image_blocking import pipeline
 from matching_pipeline.image_blocking.config import AUCTION_ROLE, LOST_ROLE
+from matching_pipeline.image_blocking.db_updates import ExpectedImageVersion
 from matching_pipeline.image_blocking.input_sources import ImageFileRow
 
 
@@ -73,25 +75,44 @@ class PipelineHelperTests(unittest.TestCase):
                 )
 
     def test_mark_write_and_logging_helpers(self) -> None:
-        auction = [ImageFileRow("a", Path("a.jpg"))]
+        lost = [ImageFileRow("l", Path("l.jpg"), content_version=4)]
+        auction = [ImageFileRow("a", Path("a.jpg"), content_version=5)]
         with mock.patch.object(pipeline, "mark_image_files_embedded", return_value=3) as mark:
             self.assertEqual(
-                pipeline._mark_embedded_after_blocking(None, ["l"], auction), 3
+                pipeline._mark_embedded_after_blocking(None, lost, auction), 3
             )
-            mark.assert_called_once_with(["l", "a"])
+            mark.assert_called_once_with(
+                [ExpectedImageVersion("l", 4), ExpectedImageVersion("a", 5)]
+            )
         with mock.patch.object(pipeline, "mark_image_files_embedded") as mark:
             self.assertEqual(
-                pipeline._mark_embedded_after_blocking(Path("x.csv"), ["l"], auction),
+                pipeline._mark_embedded_after_blocking(Path("x.csv"), lost, auction),
                 0,
             )
             mark.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "missing content_version"):
+            pipeline._mark_embedded_after_blocking(
+                None,
+                [ImageFileRow("legacy", Path("legacy.jpg"))],
+                [],
+            )
 
         with mock.patch.object(
             pipeline, "write_candidate_parts", return_value=(2, 1, 0)
         ) as write:
             model = mock.Mock()
             result = pipeline._write_candidates(
-                auction, ["l"], "embeddings", model, 2, 3, 4
+                auction,
+                ["l"],
+                "embeddings",
+                model,
+                2,
+                3,
+                4,
+                model_identity="test/dino-model",
+                lost_source_identity="lost-source-v1",
+                lost_content_versions={"l": 7},
+                lost_content_sha256={"l": "a" * 64},
             )
             self.assertEqual(result, (2, 1, 0))
             write.assert_called_once_with(
@@ -99,10 +120,38 @@ class PipelineHelperTests(unittest.TestCase):
                 ["l"],
                 "embeddings",
                 model.get,
+                model_identity="test/dino-model",
+                lost_source_identity="lost-source-v1",
+                lost_content_versions={"l": 7},
+                lost_content_sha256={"l": "a" * 64},
                 top_k=2,
                 image_batch_size=3,
                 shard_size=4,
             )
+
+        self.assertEqual(
+            pipeline._candidate_model_identity({"model_id": " test/dino-model "}),
+            "test/dino-model",
+        )
+        with self.assertRaisesRegex(ValueError, "missing model_id"):
+            pipeline._candidate_model_identity({})
+        self.assertEqual(
+            pipeline._candidate_lost_source_identity(
+                {"source_identity_sha256": " source-v1 "}
+            ),
+            "source-v1",
+        )
+        with self.assertRaisesRegex(ValueError, "missing source_identity_sha256"):
+            pipeline._candidate_lost_source_identity({})
+        self.assertEqual(
+            pipeline._candidate_lost_content_sha256(
+                {"source_identities": {"l": {"source_sha256": "a" * 64}}},
+                ["l"],
+            ),
+            {"l": "a" * 64},
+        )
+        with self.assertRaisesRegex(ValueError, "source_identities"):
+            pipeline._candidate_lost_content_sha256({}, ["l"])
 
         rows = [ImageFileRow(str(index), Path(str(index))) for index in range(4)]
         with self.assertLogs(pipeline.logger, level="DEBUG") as logs:

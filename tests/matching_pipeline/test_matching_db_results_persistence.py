@@ -116,6 +116,34 @@ class DbHelperTests(unittest.TestCase):
                 10,
             )],
         )
+        self.assertEqual(len(cursor.execute_calls), 1)
+        invalidation_sql, invalidation_params = cursor.execute_calls[0]
+        self.assertIn("WITH written_pairs", invalidation_sql)
+        self.assertIn("score.metadata_final_score IS NULL", invalidation_sql)
+        self.assertIn("score.image_final_score IS NOT NULL", invalidation_sql)
+        self.assertIn("is_metadata_matching_processed = false", invalidation_sql)
+        self.assertIn("is_metadata_matching_processed_at = NULL", invalidation_sql)
+        self.assertEqual(invalidation_params, ([UUID_1], [UUID_2]))
+
+    def test_metadata_invalidation_deduplicates_written_pairs(self) -> None:
+        cursor = Cursor()
+        write = result_rows.ImageMatchScoreWrite(
+            lost_artwork_id=UUID_1,
+            auction_artwork_id=UUID_2,
+            image_matching_confidence=0.8,
+            image_final_score=0.4,
+            image_blocking_similarity=0.5,
+            best_image_file_id=10,
+            image_visualization={},
+        )
+
+        db_results._invalidate_metadata_matching_for_image_only_pairs(
+            cursor, [write, write]
+        )
+
+        self.assertEqual(len(cursor.execute_calls), 1)
+        _sql, params = cursor.execute_calls[0]
+        self.assertEqual(params, ([UUID_1], [UUID_2]))
 
     def test_finalize_coerces_null_and_numeric_counts(self) -> None:
         cursor = Cursor(finalized_row=(None, "2", 3))
@@ -179,6 +207,17 @@ class DbTransactionTests(unittest.TestCase):
         self.assertEqual(upsert_row[0:5], (UUID_3, UUID_1, 0.8, 0.4, 0.5))
         self.assertEqual(upsert_row[5], expected_program)
         self.assertEqual(upsert_row[7], 10)
+        invalidation_index = next(
+            index
+            for index, (sql, _params) in enumerate(cursor.execute_calls)
+            if "WITH written_pairs" in sql
+        )
+        finalization_index = next(
+            index
+            for index, (sql, _params) in enumerate(cursor.execute_calls)
+            if "WITH input_ids" in sql
+        )
+        self.assertLess(invalidation_index, finalization_index)
 
     def test_successful_empty_write_only_finalizes_and_commits(self) -> None:
         cursor = Cursor(finalized_row=(1, 1, 0))
@@ -211,6 +250,27 @@ class DbTransactionTests(unittest.TestCase):
         self.assertEqual(connection.rollback_count, 1)
         self.assertEqual(connection.close_count, 1)
         self.assertTrue(cursor.exited)
+
+    def test_metadata_invalidation_failure_rolls_back_all_image_writes(self) -> None:
+        cursor = Cursor(
+            auction_rows=[(10, UUID_1)],
+            lost_rows=[(20, UUID_3)],
+            fail_text="WITH written_pairs",
+        )
+        connection = Connection(cursor)
+        with (
+            patch.object(db_results, "connect_db", return_value=connection),
+            self.assertRaisesRegex(RuntimeError, "synthetic cursor failure"),
+        ):
+            db_results.write_image_matching_results_to_db(
+                [self._accepted_match()], ["10"]
+            )
+        self.assertEqual(connection.commit_count, 0)
+        self.assertEqual(connection.rollback_count, 1)
+        self.assertEqual(connection.close_count, 1)
+        self.assertFalse(
+            any("WITH input_ids" in sql for sql, _params in cursor.execute_calls)
+        )
 
     def test_cursor_failure_rolls_back_and_closes(self) -> None:
         cursor = Cursor(fail_text="WITH input_ids")

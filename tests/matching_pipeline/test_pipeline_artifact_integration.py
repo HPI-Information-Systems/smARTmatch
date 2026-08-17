@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 import unittest
@@ -70,6 +71,12 @@ class PipelineArtifactIntegrationTests(unittest.TestCase):
                     ["lost-1"],
                     np.asarray([[1.0, 0.0]], dtype=np.float32),
                     lambda: _EmbeddingModel(),
+                    model_identity="integration/dino-model",
+                    lost_source_identity="integration-lost-source-v1",
+                    lost_content_versions={"lost-1": 1},
+                    lost_content_sha256={
+                        "lost-1": hashlib.sha256(b"lost").hexdigest()
+                    },
                     top_k=1,
                     image_batch_size=1,
                     shard_size=1,

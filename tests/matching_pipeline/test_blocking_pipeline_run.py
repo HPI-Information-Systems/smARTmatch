@@ -10,8 +10,17 @@ from types import SimpleNamespace
 from unittest import mock
 
 from _blocking_test_support import patched_dirs
+
 from matching_pipeline.image_blocking import pipeline
+from matching_pipeline.image_blocking.db_updates import ExpectedImageVersion
 from matching_pipeline.image_blocking.input_sources import ImageFileRow
+
+
+def _source_identities(*file_ids: str) -> dict[str, dict[str, str]]:
+    return {
+        file_id: {"source_sha256": (str(index + 1) * 64)[:64]}
+        for index, file_id in enumerate(file_ids)
+    }
 
 
 class PipelineRunTests(unittest.TestCase):
@@ -136,7 +145,12 @@ class PipelineRunTests(unittest.TestCase):
         cache = SimpleNamespace(
             file_ids=["l1", "l2"],
             embeddings=SimpleNamespace(shape=(2, 8)),
-            metadata={"generated_count": 1},
+            metadata={
+                "generated_count": 1,
+                "model_id": "test/dino-model",
+                "source_identity_sha256": "lost-source-v1",
+                "source_identities": _source_identities("l1", "l2"),
+            },
         )
         fake_model = mock.Mock()
         with tempfile.TemporaryDirectory() as tmp:
@@ -148,6 +162,10 @@ class PipelineRunTests(unittest.TestCase):
             ) as ensure, mock.patch.object(
                 pipeline, "_write_candidates", return_value=(7, 3, 1)
             ) as candidates, mock.patch.object(
+                pipeline,
+                "source_identity_sha256",
+                return_value="lost-source-v1",
+            ), mock.patch.object(
                 pipeline, "_ModelProvider", return_value=fake_model
             ), mock.patch.object(
                 pipeline, "mark_image_files_embedded"
@@ -168,17 +186,34 @@ class PipelineRunTests(unittest.TestCase):
             )
             self.assertEqual(ensure.call_args.kwargs["model_factory"], fake_model.get)
             candidates.assert_called_once_with(
-                auction, ["l1", "l2"], cache.embeddings, fake_model, 5, 2, 4
+                auction,
+                ["l1", "l2"],
+                cache.embeddings,
+                fake_model,
+                5,
+                2,
+                4,
+                model_identity="test/dino-model",
+                lost_source_identity="lost-source-v1",
+                lost_content_versions={"l1": None, "l2": None},
+                lost_content_sha256={
+                    file_id: identity["source_sha256"]
+                    for file_id, identity in _source_identities("l1", "l2").items()
+                },
             )
             mark.assert_not_called()
 
     def test_full_db_run_marks_all_embedded_ids(self) -> None:
-        lost = [ImageFileRow("l", Path("l.jpg"))]
-        auction = [ImageFileRow("a", Path("a.jpg"))]
+        lost = [ImageFileRow("l", Path("l.jpg"), content_version=3)]
+        auction = [ImageFileRow("a", Path("a.jpg"), content_version=4)]
         cache = SimpleNamespace(
-            file_ids=["cached-lost"],
+            file_ids=["l"],
             embeddings=SimpleNamespace(shape=(1, 2)),
-            metadata={},
+            metadata={
+                "model_id": "test/dino-model",
+                "source_identity_sha256": "lost-source-v1",
+                "source_identities": _source_identities("l"),
+            },
         )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
@@ -190,14 +225,58 @@ class PipelineRunTests(unittest.TestCase):
                 pipeline, "ensure_lost_embedding_cache", return_value=cache
             ), mock.patch.object(
                 pipeline, "_write_candidates", return_value=(1, 1, 0)
+            ), mock.patch.object(
+                pipeline,
+                "source_identity_sha256",
+                return_value="lost-source-v1",
             ), mock.patch.object(pipeline, "_ModelProvider"), mock.patch.object(
                 pipeline, "mark_image_files_embedded", return_value=2
             ) as mark:
                 result = pipeline.run_image_blocking(auction_limit=1)
 
-            mark.assert_called_once_with(["cached-lost", "a"])
+            mark.assert_called_once_with(
+                [ExpectedImageVersion("l", 3), ExpectedImageVersion("a", 4)]
+            )
             self.assertEqual(result.generated_lost_embedding_count, 0)
             self.assertEqual(result.embedded_image_file_count, 2)
+
+    def test_lost_source_change_after_candidates_clears_parts_and_fails(self) -> None:
+        lost = [ImageFileRow("lost", Path("lost.jpg"))]
+        auction = [ImageFileRow("auction", Path("auction.jpg"))]
+        cache = SimpleNamespace(
+            file_ids=["lost"],
+            embeddings=SimpleNamespace(shape=(1, 2)),
+            metadata={
+                "model_id": "test/dino-model",
+                "source_identity_sha256": "before",
+                "source_identities": _source_identities("lost"),
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            candidates = root / "candidates"
+            with patched_dirs(root, candidates), mock.patch.object(
+                pipeline, "has_unprocessed_auction_image_file_rows", return_value=True
+            ), mock.patch.object(
+                pipeline, "_load_inputs", return_value=(lost, auction)
+            ), mock.patch.object(
+                pipeline, "write_image_files_parquet"
+            ), mock.patch.object(
+                pipeline, "ensure_lost_embedding_cache", return_value=cache
+            ), mock.patch.object(
+                pipeline, "_write_candidates", return_value=(1, 1, 0)
+            ), mock.patch.object(
+                pipeline, "source_identity_sha256", return_value="after"
+            ), mock.patch.object(
+                pipeline, "clear_candidate_parts"
+            ) as clear, mock.patch.object(
+                pipeline, "mark_image_files_embedded"
+            ) as mark:
+                with self.assertRaisesRegex(RuntimeError, "Lost images changed"):
+                    pipeline.run_image_blocking(auction_limit=1)
+
+            clear.assert_called_once_with(candidates)
+            mark.assert_not_called()
 
     def test_pipeline_propagates_cache_and_candidate_failures(self) -> None:
         lost = [ImageFileRow("l", Path("l.jpg"))]
@@ -205,7 +284,11 @@ class PipelineRunTests(unittest.TestCase):
         cache = SimpleNamespace(
             file_ids=["l"],
             embeddings=SimpleNamespace(shape=(1, 2)),
-            metadata={},
+            metadata={
+                "model_id": "test/dino-model",
+                "source_identity_sha256": "lost-source-v1",
+                "source_identities": _source_identities("l"),
+            },
         )
         for target, side_effect in (
             ("ensure_lost_embedding_cache", RuntimeError("cache failed")),

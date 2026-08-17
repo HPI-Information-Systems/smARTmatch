@@ -34,6 +34,7 @@ Example usage:
     db.commit()
 """
 
+import hashlib
 import os
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -46,6 +47,28 @@ from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.engine import URL
 from sqlalchemy.exc import IntegrityError, MultipleResultsFound
 from sqlalchemy.orm import Session, load_only, sessionmaker
+
+
+def _normalize_content_sha256(value: str | None) -> str | None:
+    if value is None:
+        return None
+    digest = str(value).strip().lower()
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        raise ValueError("content_sha256 must be a 64-character hexadecimal digest")
+    return digest
+
+
+def _stored_image_content_sha256(file_path: str) -> str | None:
+    path = Path(file_path).expanduser()
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parents[1] / path
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _load_dotenv_files() -> None:
@@ -792,12 +815,67 @@ class Database:
         *,
         file_path: str,
         source_url: str | None = None,
+        content_sha256: str | None = None,
     ) -> object | None:
         session = self._get_session()
         has_source_url = self._table_has_columns("image_file", {"source_url"})
+        has_content_version = self._table_has_columns(
+            "image_file", {"content_sha256", "content_version"}
+        )
+        normalized_digest = _normalize_content_sha256(content_sha256)
+        if has_content_version and normalized_digest is not None:
+            # Serialize cooperating scraper writers for this stable path until
+            # transaction commit, then fingerprint the bytes currently stored.
+            session.execute(
+                text(
+                    "select pg_advisory_xact_lock("
+                    "hashtextextended(:file_path, 0)"
+                    ")"
+                ),
+                {"file_path": file_path},
+            )
+            normalized_digest = (
+                _stored_image_content_sha256(file_path) or normalized_digest
+            )
         existing_id = self._image_file_id_by_path(file_path=file_path)
         if existing_id is not None:
-            if has_source_url and source_url:
+            if has_content_version and normalized_digest is not None:
+                if has_source_url and source_url:
+                    session.execute(
+                        text(
+                            """
+                            update image_file
+                            set source_url = :source_url,
+                                content_sha256 = :content_sha256
+                            where image_file_id = :image_file_id
+                              and (
+                                  source_url is distinct from :source_url
+                                  or content_sha256 is distinct from :content_sha256
+                              )
+                            """
+                        ),
+                        {
+                            "source_url": source_url,
+                            "content_sha256": normalized_digest,
+                            "image_file_id": existing_id,
+                        },
+                    )
+                else:
+                    session.execute(
+                        text(
+                            """
+                            update image_file
+                            set content_sha256 = :content_sha256
+                            where image_file_id = :image_file_id
+                              and content_sha256 is distinct from :content_sha256
+                            """
+                        ),
+                        {
+                            "content_sha256": normalized_digest,
+                            "image_file_id": existing_id,
+                        },
+                    )
+            elif has_source_url and source_url:
                 session.execute(
                     text(
                         """
@@ -814,6 +892,39 @@ class Database:
         savepoint_ctx, has_savepoint = self._savepoint_context(session)
         try:
             with savepoint_ctx:
+                if has_content_version:
+                    if has_source_url:
+                        return session.execute(
+                            text(
+                                """
+                                insert into image_file (
+                                    file_path, source_url, content_sha256
+                                )
+                                values (
+                                    :file_path, :source_url, :content_sha256
+                                )
+                                returning image_file_id
+                                """
+                            ),
+                            {
+                                "file_path": file_path,
+                                "source_url": source_url,
+                                "content_sha256": normalized_digest,
+                            },
+                        ).scalar_one()
+                    return session.execute(
+                        text(
+                            """
+                            insert into image_file (file_path, content_sha256)
+                            values (:file_path, :content_sha256)
+                            returning image_file_id
+                            """
+                        ),
+                        {
+                            "file_path": file_path,
+                            "content_sha256": normalized_digest,
+                        },
+                    ).scalar_one()
                 if has_source_url:
                     return session.execute(
                         text(
@@ -839,7 +950,82 @@ class Database:
             if not has_savepoint:
                 self._safe_session_rollback(session)
 
-        return self._image_file_id_by_path(file_path=file_path)
+        existing_id = self._image_file_id_by_path(file_path=file_path)
+        if existing_id is None:
+            return None
+        if source_url or normalized_digest is not None:
+            return self._ensure_image_file_id(
+                file_path=file_path,
+                source_url=source_url,
+                content_sha256=normalized_digest,
+            )
+        return existing_id
+
+    def _clear_auction_image_match_scores(
+        self, *, auction_artwork_id: UUID | object
+    ) -> None:
+        """Remove image-derived score state while preserving metadata matches."""
+        columns = self._get_table_columns("match_score")
+        if not {
+            "auction_id",
+            "metadata_final_score",
+            "image_final_score",
+        }.issubset(columns):
+            return
+
+        assignments = [
+            f"{column} = null"
+            for column in (
+                "image_matching_confidence",
+                "image_final_score",
+                "image_blocking_similarity",
+                "image_match_date",
+                "image_matching_program",
+                "best_image_file_id",
+            )
+            if column in columns
+        ]
+        if "image_visualization" in columns:
+            assignments.append("image_visualization = '{}'")
+
+        session = self._get_session()
+        if assignments:
+            session.execute(
+                text(
+                    f"update match_score set {', '.join(assignments)} "
+                    "where auction_id = :auction_artwork_id "
+                    "and metadata_final_score is not null"
+                ),
+                {"auction_artwork_id": auction_artwork_id},
+            )
+        session.execute(
+            text(
+                "delete from match_score "
+                "where auction_id = :auction_artwork_id "
+                "and metadata_final_score is null"
+            ),
+            {"auction_artwork_id": auction_artwork_id},
+        )
+
+    def _mark_auction_without_images_processed(
+        self, *, auction_artwork_id: UUID | object
+    ) -> None:
+        """Finalize an empty artwork because no pending image link can roll it up."""
+        columns = self._get_table_columns("auction_artwork")
+        assignments: list[str] = []
+        if "is_image_matching_processed" in columns:
+            assignments.append("is_image_matching_processed = true")
+        if "is_image_matching_processed_at" in columns:
+            assignments.append("is_image_matching_processed_at = current_timestamp")
+        if not assignments:
+            return
+        self._get_session().execute(
+            text(
+                f"update auction_artwork set {', '.join(assignments)} "
+                "where auction_artwork_id = :auction_artwork_id"
+            ),
+            {"auction_artwork_id": auction_artwork_id},
+        )
 
     def set_auction_artwork_images(
         self,
@@ -847,6 +1033,7 @@ class Database:
         auction_artwork_id: UUID | object,
         image_paths: Sequence[str] | None,
         image_source_urls: Mapping[str, str] | None = None,
+        image_content_sha256: Mapping[str, str] | None = None,
         authoritative: bool = True,
     ) -> None:
         """Reconcile image links, preserving old links after incomplete downloads."""
@@ -891,6 +1078,13 @@ class Database:
                         "auction_artwork_id": auction_artwork_id,
                     },
                 )
+                if authoritative and not normalized_paths:
+                    self._clear_auction_image_match_scores(
+                        auction_artwork_id=auction_artwork_id
+                    )
+                    self._mark_auction_without_images_processed(
+                        auction_artwork_id=auction_artwork_id
+                    )
             return
 
         desired_ids: list[object] = []
@@ -899,6 +1093,7 @@ class Database:
             image_file_id = self._ensure_image_file_id(
                 file_path=image_path,
                 source_url=(image_source_urls or {}).get(image_path),
+                content_sha256=(image_content_sha256 or {}).get(image_path),
             )
             if image_file_id is None or image_file_id in desired_set:
                 continue
@@ -919,6 +1114,12 @@ class Database:
             .scalars()
             .all()
         )
+
+        authoritative_empty = authoritative and not desired_ids
+        if authoritative_empty:
+            self._clear_auction_image_match_scores(
+                auction_artwork_id=auction_artwork_id
+            )
 
         if authoritative:
             for image_file_id in existing_ids - desired_set:
@@ -975,12 +1176,18 @@ class Database:
                 },
             )
 
+        if authoritative_empty:
+            self._mark_auction_without_images_processed(
+                auction_artwork_id=auction_artwork_id
+            )
+
     def set_lost_artwork_images(
         self,
         *,
         lost_artwork_id: UUID | object,
         image_paths: Sequence[str] | None,
         image_source_urls: Mapping[str, str] | None = None,
+        image_content_sha256: Mapping[str, str] | None = None,
     ) -> None:
         session = self._get_session()
         normalized_paths = self._normalize_image_paths(image_paths)
@@ -1017,6 +1224,7 @@ class Database:
             image_file_id = self._ensure_image_file_id(
                 file_path=image_path,
                 source_url=(image_source_urls or {}).get(image_path),
+                content_sha256=(image_content_sha256 or {}).get(image_path),
             )
             if image_file_id is None or image_file_id in desired_set:
                 continue

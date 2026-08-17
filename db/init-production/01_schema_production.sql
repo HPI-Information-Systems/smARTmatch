@@ -86,14 +86,40 @@ CREATE TABLE IF NOT EXISTS literature_source (
 
 CREATE TABLE IF NOT EXISTS image_file (
     image_file_id serial PRIMARY KEY,
-    file_path text,
+    file_path text UNIQUE,
+    source_url text,
+    content_sha256 varchar(64),
+    content_version bigint NOT NULL DEFAULT 1,
     is_embedded boolean NOT NULL DEFAULT false,
     cleaned_up_at timestamptz,
+    CONSTRAINT ck_image_file_content_sha256 CHECK (
+        content_sha256 IS NULL OR content_sha256 ~ '^[0-9a-f]{64}$'
+    ),
+    CONSTRAINT ck_image_file_content_version CHECK (content_version > 0),
     CONSTRAINT ck_image_file_cleanup_state CHECK (
         (cleaned_up_at IS NULL AND file_path IS NOT NULL)
         OR (cleaned_up_at IS NOT NULL AND file_path IS NULL)
     )
 );
+
+CREATE OR REPLACE FUNCTION version_image_file_content_change()
+RETURNS trigger AS $$
+BEGIN
+    IF NEW.content_sha256 IS DISTINCT FROM OLD.content_sha256 THEN
+        NEW.content_version = OLD.content_version + 1;
+        NEW.is_embedded = false;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_version_image_file_content_change ON image_file;
+
+CREATE TRIGGER trg_version_image_file_content_change
+BEFORE UPDATE OF content_sha256 ON image_file
+FOR EACH ROW
+EXECUTE FUNCTION version_image_file_content_change();
 
 CREATE TABLE IF NOT EXISTS lost_artwork (
     lost_artwork_id        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -277,6 +303,34 @@ CREATE TABLE IF NOT EXISTS auction_artwork_image_file (
     PRIMARY KEY (auction_artwork_id, image_file_id)
 );
 
+CREATE OR REPLACE FUNCTION reset_auction_artwork_image_matching_for_pending_link()
+RETURNS trigger AS $$
+BEGIN
+    UPDATE auction_artwork
+    SET is_image_matching_processed = false,
+        is_image_matching_processed_at = NULL
+    WHERE auction_artwork_id = NEW.auction_artwork_id
+      AND (
+          is_image_matching_processed = true
+          OR is_image_matching_processed_at IS NOT NULL
+      );
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_reset_auction_artwork_image_matching_for_pending_link
+ON auction_artwork_image_file;
+
+CREATE TRIGGER trg_reset_auction_artwork_image_matching_for_pending_link
+AFTER INSERT ON auction_artwork_image_file
+FOR EACH ROW
+WHEN (
+    NEW.is_image_matching_processed = false
+    OR NEW.is_image_matching_completed_without_error = false
+)
+EXECUTE FUNCTION reset_auction_artwork_image_matching_for_pending_link();
+
 CREATE TABLE IF NOT EXISTS lost_artwork_image_file (
     lost_artwork_id uuid NOT NULL REFERENCES lost_artwork(lost_artwork_id) ON DELETE CASCADE,
     image_file_id integer NOT NULL REFERENCES image_file(image_file_id) ON DELETE CASCADE,
@@ -304,6 +358,7 @@ CREATE TABLE IF NOT EXISTS scraper_run (
     progress_updated_at timestamptz,
     error_message      text
 );
+
 
 CREATE TABLE IF NOT EXISTS match_score (
     lost_id          uuid NOT NULL REFERENCES lost_artwork(lost_artwork_id) ON DELETE CASCADE,

@@ -87,30 +87,15 @@ class PoolingHelperTests(unittest.TestCase):
 
 
 class DinoAdapterConstructionTests(unittest.TestCase):
-    def test_size_resolution_model_resolution_and_labels(self) -> None:
+    def test_model_resolution_uses_only_explicit_or_environment_id(self) -> None:
         adapter = dino_adapter.DinoV3Adapter
-        with mock.patch.object(dino_adapter, "env_str", return_value="vit-s+"):
-            self.assertEqual(adapter._resolve_size_key(None), "splus")
-        self.assertEqual(adapter._resolve_size_key(" H+ "), "hplus")
-        with self.assertRaisesRegex(ValueError, "Unsupported DINOv3 size"):
-            adapter._resolve_size_key("gigantic")
-
-        self.assertEqual(adapter._resolve_model_id("custom/model", "s"), "custom/model")
-        with mock.patch.object(dino_adapter, "env_str", return_value="env/model"):
-            self.assertEqual(adapter._resolve_model_id(None, None), "env/model")
+        self.assertEqual(adapter._resolve_model_id(" custom/model "), "custom/model")
         with mock.patch.object(
-            dino_adapter,
-            "env_str",
-            side_effect=lambda _name, default=None: default,
-        ):
-            self.assertEqual(
-                adapter._resolve_model_id(None, None),
-                adapter.MODEL_ID_BY_SIZE_KEY[adapter.DEFAULT_SIZE_KEY],
-            )
-        self.assertEqual(
-            adapter._resolve_model_id(None, "s"), adapter.MODEL_ID_BY_SIZE_KEY["s"]
-        )
-        self.assertEqual(adapter.size_label("vit-7b"), "ViT-7B (6716M)")
+            dino_adapter, "env_dinov3_model_id", return_value="env/model"
+        ) as environment_model:
+            self.assertEqual(adapter._resolve_model_id(None), "env/model")
+            self.assertEqual(adapter._resolve_model_id("   "), "env/model")
+        self.assertEqual(environment_model.call_count, 2)
 
     def test_device_selection(self) -> None:
         with mock.patch.object(torch.cuda, "is_available", return_value=True):
@@ -157,14 +142,17 @@ class DinoAdapterConstructionTests(unittest.TestCase):
             "from_pretrained",
             return_value=processor,
         ) as load_processor:
-            adapter = dino_adapter.DinoV3Adapter(size_key="s", use_compile=True)
+            adapter = dino_adapter.DinoV3Adapter(
+                model_id="test/dino-small",
+                use_compile=True,
+            )
 
         self.assertIs(adapter.model, model)
         self.assertIs(adapter.processor, processor)
         self.assertEqual(model.to_device, "cpu")
         self.assertTrue(model.eval_called)
         load_model.assert_called_once_with(
-            dino_adapter.DinoV3Adapter.MODEL_ID_BY_SIZE_KEY["s"],
+            "test/dino-small",
             trust_remote_code=True,
         )
         load_processor.assert_called_once_with(
@@ -206,7 +194,8 @@ class DinoAdapterConstructionTests(unittest.TestCase):
                     torch, "compile", side_effect=[compile_effect]
                 ) as compile_model:
                     adapter = dino_adapter.DinoV3Adapter(
-                        model_id="custom/model", size_key="b", hf_token="cli"
+                        model_id="custom/model",
+                        hf_token="cli",
                     )
 
                 load_model.assert_called_once_with(
@@ -237,7 +226,10 @@ class DinoAdapterConstructionTests(unittest.TestCase):
             "from_pretrained",
             return_value=mock.Mock(),
         ), mock.patch.object(torch, "compile") as compile_model:
-            dino_adapter.DinoV3Adapter(size_key="s", use_compile=False)
+            dino_adapter.DinoV3Adapter(
+                model_id="test/dino-small",
+                use_compile=False,
+            )
         compile_model.assert_not_called()
 
 

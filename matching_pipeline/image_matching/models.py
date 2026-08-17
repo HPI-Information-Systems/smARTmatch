@@ -1,7 +1,12 @@
 """SuperPoint, LightGlue, and classifier adapters for final image verification."""
 
+import hashlib
+import json
 import logging
 import os
+import tempfile
+from collections.abc import Mapping
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from time import perf_counter
 
@@ -13,23 +18,264 @@ from lightglue.utils import load_image, rbd
 
 logger = logging.getLogger(__name__)
 
+FEATURE_CACHE_SCHEMA_VERSION = 1
+SUPERPOINT_MODEL_NAME = "lightglue.SuperPoint"
+SUPERPOINT_MODEL_VERSION = "superpoint_v1"
+_FINGERPRINT_CHUNK_SIZE = 1024 * 1024
+
+
+def _package_identity(distribution_name: str) -> tuple[str, str]:
+    try:
+        package = distribution(distribution_name)
+    except PackageNotFoundError:
+        return "unknown", "unknown"
+
+    revision = "unknown"
+    try:
+        direct_url = json.loads(package.read_text("direct_url.json") or "{}")
+        vcs_info = direct_url.get("vcs_info", {})
+        revision = str(
+            vcs_info.get("commit_id")
+            or vcs_info.get("requested_revision")
+            or "unknown"
+        )
+    except (AttributeError, TypeError, ValueError):
+        pass
+    return package.version, revision
+
+
+LIGHTGLUE_VERSION, LIGHTGLUE_REVISION = _package_identity("lightglue")
+KORNIA_VERSION, _ = _package_identity("kornia")
+OPENCV_VERSION, _ = _package_identity("opencv-python-headless")
+
 
 def _inference_device() -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _stat_signature(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _source_fingerprint(
+    path: Path,
+    memo: dict[Path, tuple[tuple[int, int, int, int, int], dict[str, object]]],
+) -> dict[str, object]:
+    path = Path(path)
+    initial_stat = path.stat()
+    initial_signature = _stat_signature(initial_stat)
+    cached = memo.get(path)
+    if cached is not None and cached[0] == initial_signature:
+        return cached[1]
+
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(_FINGERPRINT_CHUNK_SIZE):
+            digest.update(chunk)
+
+    final_signature = _stat_signature(path.stat())
+    if final_signature != initial_signature:
+        raise RuntimeError(f"Image changed while fingerprinting: {path}")
+
+    fingerprint: dict[str, object] = {
+        "algorithm": "sha256",
+        "digest": digest.hexdigest(),
+        "size": initial_stat.st_size,
+    }
+    memo[path] = (initial_signature, fingerprint)
+    return fingerprint
+
+
+def _json_compatible(value: object) -> object:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_compatible(item) for item in value]
+    return str(value)
+
+
+def _tensor_mapping_digest(values: Mapping[str, object]) -> str:
+    digest = hashlib.sha256()
+    for name in sorted(values):
+        tensor = values[name]
+        if not isinstance(tensor, torch.Tensor):
+            raise ValueError(f"Expected tensor for {name!r}")
+        materialized = tensor.detach().cpu().contiguous()
+        parts = (
+            name.encode("utf-8"),
+            str(materialized.dtype).encode("ascii"),
+            json.dumps(list(materialized.shape)).encode("ascii"),
+            materialized.view(torch.uint8).numpy().tobytes(),
+        )
+        for part in parts:
+            digest.update(len(part).to_bytes(8, "big"))
+            digest.update(part)
+    return digest.hexdigest()
+
+
+def _model_state_fingerprint(model: object) -> str:
+    state = model.state_dict()
+    if not isinstance(state, Mapping) or not state:
+        raise RuntimeError("SuperPoint model has no fingerprintable state")
+    return _tensor_mapping_digest(state)
+
+
+def _validate_features(features: object) -> dict:
+    if not isinstance(features, dict):
+        raise ValueError("SuperPoint features must be a dictionary")
+    required = {"keypoints", "keypoint_scores", "descriptors", "image_size"}
+    missing = sorted(required - features.keys())
+    if missing:
+        raise ValueError(f"SuperPoint features are missing keys: {missing}")
+    if any(not isinstance(value, torch.Tensor) for value in features.values()):
+        raise ValueError("SuperPoint feature values must all be tensors")
+
+    keypoints = features["keypoints"]
+    keypoint_scores = features["keypoint_scores"]
+    descriptors = features["descriptors"]
+    image_size = features["image_size"]
+    if keypoints.ndim != 3 or keypoints.shape[0] != 1 or keypoints.shape[2] != 2:
+        raise ValueError(f"Invalid SuperPoint keypoint shape: {keypoints.shape}")
+    keypoint_count = keypoints.shape[1]
+    if tuple(keypoint_scores.shape) != (1, keypoint_count):
+        raise ValueError(
+            f"Invalid SuperPoint keypoint-score shape: {keypoint_scores.shape}"
+        )
+    if (
+        descriptors.ndim != 3
+        or descriptors.shape[0] != 1
+        or descriptors.shape[1] != keypoint_count
+        or descriptors.shape[2] <= 0
+    ):
+        raise ValueError(f"Invalid SuperPoint descriptor shape: {descriptors.shape}")
+    if tuple(image_size.shape) != (1, 2):
+        raise ValueError(f"Invalid SuperPoint image-size shape: {image_size.shape}")
+
+    for name, value in features.items():
+        if value.is_floating_point() and not bool(torch.isfinite(value).all().item()):
+            raise ValueError(f"SuperPoint feature {name!r} contains non-finite values")
+    if not bool((image_size > 0).all().item()):
+        raise ValueError("SuperPoint image size must be positive")
+    return features
+
+
+def _feature_cache_path(base_path: Path, metadata: dict[str, object]) -> Path:
+    serialized = json.dumps(
+        metadata,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    identity = hashlib.sha256(serialized).hexdigest()
+    suffix = base_path.suffix or ".pt"
+    stem = base_path.name[: -len(suffix)] if base_path.suffix else base_path.name
+    return base_path.with_name(f"{stem}.{identity}{suffix}")
+
+
+def _load_feature_cache(
+    cache_path: Path,
+    *,
+    expected_metadata: dict[str, object],
+    device: torch.device,
+) -> dict | None:
+    if not cache_path.is_file():
+        return None
+    try:
+        payload = torch.load(
+            cache_path,
+            map_location=device,
+            weights_only=True,
+        )
+    except Exception:
+        logger.warning(
+            "Ignoring unreadable SuperPoint feature cache: %s",
+            cache_path,
+            exc_info=True,
+        )
+        return None
+
+    if not isinstance(payload, dict):
+        logger.warning("Ignoring malformed SuperPoint feature cache: %s", cache_path)
+        return None
+    if payload.get("metadata") != expected_metadata:
+        logger.warning("Ignoring mismatched SuperPoint feature cache: %s", cache_path)
+        return None
+    features = payload.get("features")
+    try:
+        validated = _validate_features(features)
+        actual_digest = _tensor_mapping_digest(validated)
+    except (RuntimeError, TypeError, ValueError):
+        logger.warning(
+            "Ignoring malformed SuperPoint features: %s",
+            cache_path,
+            exc_info=True,
+        )
+        return None
+    if payload.get("features_sha256") != actual_digest:
+        logger.warning("Ignoring corrupted SuperPoint features: %s", cache_path)
+        return None
+    return validated
+
+
+def _write_feature_cache_atomic(
+    cache_path: Path,
+    *,
+    metadata: dict[str, object],
+    features: dict,
+) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{cache_path.name}.tmp.",
+        suffix=".pt",
+        dir=cache_path.parent,
+    )
+    os.close(descriptor)
+    temporary_path = Path(temporary_name)
+    try:
+        validated = _validate_features(features)
+        torch.save(
+            {
+                "metadata": metadata,
+                "features_sha256": _tensor_mapping_digest(validated),
+                "features": validated,
+            },
+            temporary_path,
+        )
+        with temporary_path.open("rb") as saved_cache:
+            os.fsync(saved_cache.fileno())
+        os.replace(temporary_path, cache_path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
 
 
 class FeatureExtractor:
     def __init__(self, max_num_keypoints: int = 2048) -> None:
         started_at = perf_counter()
         self.device = _inference_device()
+        self.max_num_keypoints = max_num_keypoints
+        self._source_fingerprints: dict[
+            Path,
+            tuple[tuple[int, int, int, int, int], dict[str, object]],
+        ] = {}
         logger.info(
             "Loading SuperPoint feature extractor (max_num_keypoints=%d, device=%s)",
             max_num_keypoints,
             self.device,
         )
         self.model = (
-            SuperPoint(max_num_keypoints=max_num_keypoints).eval().to(self.device)
+            SuperPoint(max_num_keypoints=self.max_num_keypoints).eval().to(self.device)
         )
+        self.model_configuration = _json_compatible(self.model.conf)
+        self.model_fingerprint = _model_state_fingerprint(self.model)
         logger.info(
             "SuperPoint feature extractor ready in %.1fs on %s",
             perf_counter() - started_at,
@@ -37,17 +283,42 @@ class FeatureExtractor:
         )
 
     def extract(self, path: Path, resize: int | None = 720) -> dict:
-        try:
-            image = load_image(path).to(self.device)
-        except OSError as exc:
-            logger.warning(
-                "Could not load image %s; using blank fallback image: %s",
-                path,
-                exc,
-            )
-            image = torch.zeros([3, 1, 1], device=self.device)
+        image = load_image(path).to(self.device)
         feats = self.model.extract(image, resize=resize, side="long")
         return feats
+
+    def _cache_metadata(
+        self,
+        *,
+        source_fingerprint: dict[str, object],
+        resize: int | None,
+    ) -> dict[str, object]:
+        return {
+            "cache_schema_version": FEATURE_CACHE_SCHEMA_VERSION,
+            "source": source_fingerprint,
+            "extractor": {
+                "name": SUPERPOINT_MODEL_NAME,
+                "model_version": SUPERPOINT_MODEL_VERSION,
+                "model_state_sha256": self.model_fingerprint,
+                "configuration": self.model_configuration,
+                "lightglue_version": LIGHTGLUE_VERSION,
+                "lightglue_revision": LIGHTGLUE_REVISION,
+                "torch_version": str(torch.__version__),
+                "kornia_version": KORNIA_VERSION,
+                "opencv_version": OPENCV_VERSION,
+                "max_num_keypoints": self.max_num_keypoints,
+                "resize": resize,
+                "resize_side": "long",
+                "device_type": torch.device(self.device).type,
+            },
+        }
+
+    def _fingerprint(self, image_path: Path) -> dict[str, object]:
+        fingerprints = getattr(self, "_source_fingerprints", None)
+        if fingerprints is None:
+            fingerprints = {}
+            self._source_fingerprints = fingerprints
+        return _source_fingerprint(image_path, fingerprints)
 
     def load_or_extract(
         self,
@@ -56,13 +327,31 @@ class FeatureExtractor:
         save_missing_feats: bool = True,
         resize: int | None = 720,
     ) -> dict:
-        if feats_path.exists():
-            feats = torch.load(feats_path)
-        else:
-            feats = self.extract(image_path, resize=resize)
-            if save_missing_feats:
-                os.makedirs(feats_path.parent, exist_ok=True)
-                torch.save(feats, feats_path)
+        source_fingerprint = self._fingerprint(image_path)
+        metadata = self._cache_metadata(
+            source_fingerprint=source_fingerprint,
+            resize=resize,
+        )
+        cache_path = _feature_cache_path(feats_path, metadata)
+        feats = _load_feature_cache(
+            cache_path,
+            expected_metadata=metadata,
+            device=self.device,
+        )
+        if feats is not None:
+            if self._fingerprint(image_path) != source_fingerprint:
+                raise RuntimeError(f"Image changed while loading cache: {image_path}")
+            return feats
+
+        feats = _validate_features(self.extract(image_path, resize=resize))
+        if self._fingerprint(image_path) != source_fingerprint:
+            raise RuntimeError(f"Image changed during feature extraction: {image_path}")
+        if save_missing_feats:
+            _write_feature_cache_atomic(
+                cache_path,
+                metadata=metadata,
+                features=feats,
+            )
         return feats
 
 

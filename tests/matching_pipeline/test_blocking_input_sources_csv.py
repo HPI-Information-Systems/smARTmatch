@@ -20,8 +20,18 @@ class InputSourceCsvTests(unittest.TestCase):
             inside.parent.mkdir(parents=True)
             inside.write_bytes(b"lost")
             outside.write_bytes(b"auction")
-            lost = ImageFileRow(" lost-id ", inside)
-            auction = ImageFileRow("auction-id", outside)
+            lost = ImageFileRow(
+                " lost-id ",
+                inside,
+                content_version=2,
+                content_sha256="a" * 64,
+            )
+            auction = ImageFileRow(
+                "auction-id",
+                outside,
+                content_version=3,
+                content_sha256="b" * 64,
+            )
 
             self.assertEqual(lost.as_strings(), (" lost-id ", str(inside)))
             written = input_sources.write_image_file_csv(
@@ -32,7 +42,17 @@ class InputSourceCsvTests(unittest.TestCase):
             self.assertIn("../auction.jpg", text)
 
             lost_rows, auction_rows = input_sources.read_image_file_csv(written)
-            self.assertEqual(lost_rows, [ImageFileRow("lost-id", inside)])
+            self.assertEqual(
+                lost_rows,
+                [
+                    ImageFileRow(
+                        "lost-id",
+                        inside,
+                        content_version=2,
+                        content_sha256="a" * 64,
+                    )
+                ],
+            )
             self.assertEqual(auction_rows, [auction])
 
     def test_read_csv_file_and_header_validation(self) -> None:

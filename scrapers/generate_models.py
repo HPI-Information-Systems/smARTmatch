@@ -52,6 +52,7 @@ class ColumnSpec:
     sql_type: str
     nullable: bool
     primary_key: bool
+    unique: bool
     default: Optional[str]
     foreign_key: Optional[ForeignKeySpec]
     check: Optional[str]
@@ -154,7 +155,9 @@ def _parse_foreign_key(tokens: str) -> Optional[ForeignKeySpec]:
 def _parse_column(item: str) -> Optional[ColumnSpec]:
     # table constraints
     if re.match(
-        r"^(UNIQUE|PRIMARY\s+KEY|FOREIGN\s+KEY|CHECK)\b", item.strip(), re.IGNORECASE
+        r"^(CONSTRAINT|UNIQUE|PRIMARY\s+KEY|FOREIGN\s+KEY|CHECK)\b",
+        item.strip(),
+        re.IGNORECASE,
     ):
         return None
 
@@ -169,6 +172,7 @@ def _parse_column(item: str) -> Optional[ColumnSpec]:
 
     nullable = True
     primary_key = False
+    unique = bool(re.search(r"\bUNIQUE\b", item, re.IGNORECASE))
 
     if re.search(r"\bNOT\s+NULL\b", item, re.IGNORECASE):
         nullable = False
@@ -195,6 +199,7 @@ def _parse_column(item: str) -> Optional[ColumnSpec]:
         sql_type=col_type,
         nullable=nullable,
         primary_key=primary_key,
+        unique=unique,
         default=default,
         foreign_key=fk,
         check=check,
@@ -234,6 +239,7 @@ def _apply_table_primary_keys(cols: list[ColumnSpec], pk_cols: set[str]) -> list
             sql_type=col.sql_type,
             nullable=False if col.name in pk_cols else col.nullable,
             primary_key=True if col.name in pk_cols else col.primary_key,
+            unique=col.unique,
             default=col.default,
             foreign_key=col.foreign_key,
             check=col.check,
@@ -301,6 +307,8 @@ def _sqlalchemy_type(*, table_name: str, column_name: str, sql_type: str) -> str
         return "Integer"
     if t == "integer":
         return "Integer"
+    if t == "bigint":
+        return "BigInteger"
     if t == "boolean":
         return "Boolean"
     if t == "smallint":
@@ -335,6 +343,9 @@ def _python_default(col: ColumnSpec) -> Optional[str]:
 
     if d.startswith("now(") or d == "now()":
         return "datetime.utcnow"
+
+    if re.fullmatch(r"-?\d+", d):
+        return d
 
     return None
 
@@ -402,7 +413,7 @@ def render_models(tables: list[TableSpec]) -> str:
     out.append("from uuid import uuid4")
     out.append("")
     out.append(
-        "from sqlalchemy import ARRAY, JSON, Boolean, Date, Float, ForeignKey, Integer, SmallInteger, String, Text"
+        "from sqlalchemy import ARRAY, JSON, BigInteger, Boolean, Date, Float, ForeignKey, Integer, SmallInteger, String, Text"
     )
     if any(table.uniques for table in tables):
         out.append("from sqlalchemy import UniqueConstraint")
@@ -448,7 +459,7 @@ def render_models(tables: list[TableSpec]) -> str:
                 py_type = "str" if not col.nullable else "Optional[str]"
             elif sqlatype == "Text":
                 py_type = "str" if not col.nullable else "Optional[str]"
-            elif sqlatype == "Integer":
+            elif sqlatype in {"Integer", "BigInteger"}:
                 py_type = "int" if not col.nullable else "Optional[int]"
             elif sqlatype == "Float":
                 py_type = "float" if not col.nullable else "Optional[float]"
@@ -489,6 +500,8 @@ def render_models(tables: list[TableSpec]) -> str:
 
             if col.primary_key:
                 kwargs.append("primary_key=True")
+            if col.unique:
+                kwargs.append("unique=True")
             if not col.nullable and not col.primary_key:
                 kwargs.append("nullable=False")
 
@@ -502,6 +515,8 @@ def render_models(tables: list[TableSpec]) -> str:
             elif py_def == "dict":
                 kwargs.append("default=dict")
             elif py_def in ("False", "True"):
+                kwargs.append(f"default={py_def}")
+            elif py_def is not None and re.fullmatch(r"-?\d+", py_def):
                 kwargs.append(f"default={py_def}")
 
             # Build mapped_column(...)

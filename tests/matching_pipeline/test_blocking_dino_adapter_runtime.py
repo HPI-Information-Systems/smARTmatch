@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import numpy as np
@@ -127,10 +129,33 @@ class DinoAdapterBehaviorTests(unittest.TestCase):
         with mock.patch.object(dino_adapter.Image, "open", return_value=opened) as open_image:
             default = self.adapter.generate_embedding("image.jpg")
             pooled = self.adapter.generate_embedding_from_pil(rgb, "avg")
-        open_image.assert_called_once_with("image.jpg")
+        open_image.assert_called_once_with(
+            "image.jpg", formats=dino_adapter._INPUT_IMAGE_FORMATS
+        )
         opened.convert.assert_called_once_with("RGB")
         np.testing.assert_array_equal(default, [1.0, 2.0])
         np.testing.assert_array_equal(pooled["avg"], [3.0, 4.0])
+
+    def test_generate_embedding_accepts_extensionless_jpeg_by_signature(self) -> None:
+        self.adapter.generate_embeddings_batch_from_pil = mock.Mock(
+            return_value=np.array([[1.0, 2.0]])
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "8262f768ca77afc3990dac4aa5d9dc1d6ae8d916"
+            dino_adapter.Image.new("RGB", (8, 6), "red").save(
+                image_path, format="JPEG"
+            )
+
+            result = self.adapter.generate_embedding(str(image_path))
+
+        opened_image = self.adapter.generate_embeddings_batch_from_pil.call_args.args[0][
+            0
+        ]
+        self.assertEqual(image_path.suffix, "")
+        self.assertEqual(opened_image.format, None)
+        self.assertEqual(opened_image.mode, "RGB")
+        self.assertEqual(opened_image.size, (8, 6))
+        np.testing.assert_array_equal(result, [1.0, 2.0])
 
     def test_generate_batch_paths_and_model_inference(self) -> None:
         opened = [mock.Mock(), mock.Mock()]
@@ -138,11 +163,19 @@ class DinoAdapterBehaviorTests(unittest.TestCase):
         for source, rgb in zip(opened, converted, strict=True):
             source.convert.return_value = rgb
         self.adapter.generate_embeddings_batch_from_pil = mock.Mock(return_value="batch")
-        with mock.patch.object(dino_adapter.Image, "open", side_effect=opened):
+        with mock.patch.object(
+            dino_adapter.Image, "open", side_effect=opened
+        ) as open_image:
             self.assertEqual(
                 self.adapter.generate_embeddings_batch(["one.jpg", "two.jpg"], "max"),
                 "batch",
             )
+        open_image.assert_has_calls(
+            [
+                mock.call("one.jpg", formats=dino_adapter._INPUT_IMAGE_FORMATS),
+                mock.call("two.jpg", formats=dino_adapter._INPUT_IMAGE_FORMATS),
+            ]
+        )
         self.adapter.generate_embeddings_batch_from_pil.assert_called_once_with(
             converted, "max"
         )

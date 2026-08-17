@@ -12,17 +12,48 @@ from uuid import UUID
 
 from PIL import Image
 
-from scrapers.utils.auction_scraper import AuctionPlatformScraper
+from scrapers.utils.auction_scraper import AuctionPlatformScraper, UnsafePurgeError
 from scrapers.utils.image_storage import default_images_dir, safe_image_prefix
 from scrapers.utils.scraper import _write_bytes_atomically
 
 
+class _FakeNestedTransaction:
+    def __init__(self, db: "_FakeDB") -> None:
+        self.db = db
+        self.artworks_before: set[str] = set()
+        self.reviews_before: set[str] = set()
+
+    def __enter__(self):
+        self.artworks_before = set(self.db.artworks)
+        self.reviews_before = set(self.db.reviews)
+        return self
+
+    def __exit__(self, exc_type, _exc_value, _traceback):
+        if exc_type is not None:
+            self.db.artworks = self.artworks_before
+            self.db.reviews = self.reviews_before
+        return False
+
+
+class _FakeSession:
+    def __init__(self, db: "_FakeDB") -> None:
+        self.db = db
+
+    def begin_nested(self):
+        return _FakeNestedTransaction(self.db)
+
+
 class _FakeDB:
     def __init__(self) -> None:
-        self.session = object()
+        self.artworks = {"existing-artwork"}
+        self.reviews = {"existing-review"}
+        self.session = _FakeSession(self)
         self.commits = 0
         self.existing_artwork = None
         self.image_calls: list[dict[str, object]] = []
+
+    def _get_session(self):
+        return self.session
 
     def commit(self) -> None:
         self.commits += 1
@@ -82,6 +113,8 @@ class _DummyAuctionScraper(AuctionPlatformScraper):
 
     def purge_existing_data(self) -> None:
         self.purged = True
+        self.db.artworks.clear()
+        self.db.reviews.clear()
 
 
 def _png_bytes(*, width: int, height: int) -> bytes:
@@ -156,13 +189,46 @@ class AuctionPlatformScraperTests(unittest.TestCase):
 
         self.assertTrue(scraper.after)
 
-    def test_purge_is_triggered_when_enabled(self) -> None:
+    def test_empty_purge_discovery_raises_and_preserves_existing_data(self) -> None:
         db = _FakeDB()
         scraper = _DummyAuctionScraper(db=db, urls=[], purge=True)
+
+        with self.assertRaisesRegex(UnsafePurgeError, "empty discovery"):
+            scraper.run()
+
+        self.assertTrue(scraper.purged)
+        self.assertEqual(db.artworks, {"existing-artwork"})
+        self.assertEqual(db.reviews, {"existing-review"})
+        self.assertEqual(db.commits, 0)
+        self.assertTrue(scraper.after)
+
+    def test_failed_purge_discovery_preserves_existing_data(self) -> None:
+        db = _FakeDB()
+        scraper = _DummyAuctionScraper(db=db, urls=[], purge=True)
+        scraper.get_urls = lambda skip=0: (_ for _ in ()).throw(
+            RuntimeError("discovery failed")
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "discovery failed"):
+            scraper.run()
+
+        self.assertTrue(scraper.purged)
+        self.assertEqual(db.artworks, {"existing-artwork"})
+        self.assertEqual(db.reviews, {"existing-review"})
+        self.assertEqual(db.commits, 0)
+        self.assertTrue(scraper.after)
+
+    def test_nonempty_purge_discovery_releases_guard_and_runs(self) -> None:
+        db = _FakeDB()
+        scraper = _DummyAuctionScraper(db=db, urls=["new-lot"], purge=True)
 
         scraper.run()
 
         self.assertTrue(scraper.purged)
+        self.assertEqual(db.artworks, set())
+        self.assertEqual(db.reviews, set())
+        self.assertEqual(scraper.processed, ["new-lot"])
+        self.assertEqual(db.commits, 1)
 
     def test_fetch_html_uses_shared_request_function(self) -> None:
         db = _FakeDB()
@@ -414,6 +480,7 @@ class AuctionPlatformScraperTests(unittest.TestCase):
 
             self.assertEqual(list(Path(tmp).iterdir()), [])
             self.assertFalse(destination.exists())
+
 
     def test_download_lot_images_uses_url_hash_to_prevent_stale_cache_aliases(
         self,

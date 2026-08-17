@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 from unittest.mock import patch
+from uuid import UUID
 
 from scrapers.lottissimo.scraper import LottissimoScraper
 
@@ -19,6 +21,24 @@ class LottissimoHttpTests(unittest.TestCase):
             max_wait=0.0,
             **kwargs,
         )
+
+    def test_clear_title_scopes_update_to_artwork_uuid(self) -> None:
+        db = mock.Mock()
+        session = db._get_session.return_value
+        scraper = LottissimoScraper(
+            db=db,
+            min_wait=0.0,
+            max_wait=0.0,
+        )
+        artwork_id = UUID("33333333-3333-4333-8333-333333333333")
+
+        scraper._clear_title_column(artwork_id=artwork_id)
+
+        statement, params = session.execute.call_args.args
+        statement_text = str(statement)
+        self.assertIn("where auction_artwork_id = :artwork_id", statement_text)
+        self.assertNotIn("where lot_id", statement_text)
+        self.assertEqual(params, {"artwork_id": artwork_id})
 
     def test_browser_fallback_uses_same_validated_user_agents(self) -> None:
         scraper = self._build_scraper()

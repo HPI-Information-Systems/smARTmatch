@@ -214,7 +214,7 @@ class ChristiesScraper(AuctionPlatformScraper):
         )
 
         if artist_name_for_row is None:
-            self._clear_artist_columns(lot_id=lot_id)
+            self._clear_artist_columns(artwork_id=artwork.auction_artwork_id)
 
         if self.min_wait > 0 or self.max_wait > 0:
             time.sleep(random.uniform(self.min_wait, self.max_wait))
@@ -313,7 +313,7 @@ class ChristiesScraper(AuctionPlatformScraper):
 
         return cls._normalize_artist_candidate(payload_artist)
 
-    def _clear_artist_columns(self, *, lot_id: str) -> None:
+    def _clear_artist_columns(self, *, artwork_id: object) -> None:
         actual_columns = self.db._get_table_columns("auction_artwork")
         nullable_artist_columns = [
             column
@@ -326,8 +326,11 @@ class ChristiesScraper(AuctionPlatformScraper):
         set_clause = ", ".join(f"{column} = null" for column in nullable_artist_columns)
         session = self.db._get_session()
         session.execute(
-            text(f"update auction_artwork set {set_clause} where lot_id = :lot_id"),
-            {"lot_id": lot_id},
+            text(
+                f"update auction_artwork set {set_clause} "
+                "where auction_artwork_id = :artwork_id"
+            ),
+            {"artwork_id": artwork_id},
         )
 
     # Compatibility wrappers for existing tests/helpers.

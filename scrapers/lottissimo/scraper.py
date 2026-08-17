@@ -233,19 +233,22 @@ class LottissimoScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
             image_paths=local_images,
         )
 
-        if normalized_title is None and lot_id is not None:
-            self._clear_title_column(lot_id=lot_id)
+        if normalized_title is None:
+            self._clear_title_column(artwork_id=artwork.auction_artwork_id)
 
         self.log(
             f"[save] lot {artwork.lot_id or lot.lot_id} with {len(local_images)} images"
         )
         return None
 
-    def _clear_title_column(self, *, lot_id: str) -> None:
+    def _clear_title_column(self, *, artwork_id: object) -> None:
         session = self.db._get_session()
         session.execute(
-            text("update auction_artwork set title = null where lot_id = :lot_id"),
-            {"lot_id": lot_id},
+            text(
+                "update auction_artwork set title = null "
+                "where auction_artwork_id = :artwork_id"
+            ),
+            {"artwork_id": artwork_id},
         )
 
     def _get_page_urls(self) -> list[str]:

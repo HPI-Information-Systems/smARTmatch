@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
+from uuid import UUID
 
 from bs4 import BeautifulSoup
 
@@ -92,6 +94,25 @@ class ChristiesParsingTests(unittest.TestCase):
         )
 
         self.assertEqual(artist, "Claude Monet")
+
+    def test_clear_artist_columns_scopes_update_to_artwork_uuid(self) -> None:
+        db = mock.Mock()
+        db._get_table_columns.return_value = {
+            "artist_id",
+            "artist_full_name",
+            "artist_raw_data",
+        }
+        session = db._get_session.return_value
+        scraper = ChristiesScraper(db=db, download_images=False)
+        artwork_id = UUID("11111111-1111-4111-8111-111111111111")
+
+        scraper._clear_artist_columns(artwork_id=artwork_id)
+
+        statement, params = session.execute.call_args.args
+        statement_text = str(statement)
+        self.assertIn("where auction_artwork_id = :artwork_id", statement_text)
+        self.assertNotIn("where lot_id", statement_text)
+        self.assertEqual(params, {"artwork_id": artwork_id})
 
     def test_extract_title_artist_from_online_only_markup(self) -> None:
         html = """

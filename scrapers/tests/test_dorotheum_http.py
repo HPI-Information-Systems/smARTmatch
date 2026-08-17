@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 from unittest.mock import patch
+from uuid import UUID
 
 from scrapers.dorotheum.scraper import DorotheumScraper
 
@@ -39,6 +41,35 @@ class DorotheumHttpTests(unittest.TestCase):
             scraper = self._build_scraper(cookie_header="cf_clearance=explicit")
 
         self.assertEqual(scraper._cookie_header, "cf_clearance=explicit")
+
+    def test_clear_missing_identity_scopes_update_to_artwork_uuid(self) -> None:
+        db = mock.Mock()
+        db._get_table_columns.return_value = {
+            "title",
+            "artist_id",
+            "artist_full_name",
+            "artist_raw_data",
+        }
+        session = db._get_session.return_value
+        scraper = DorotheumScraper(
+            db=db,
+            min_wait=0.0,
+            max_wait=0.0,
+            request_max_retries=1,
+        )
+        artwork_id = UUID("22222222-2222-4222-8222-222222222222")
+
+        scraper._clear_missing_identity_columns(
+            artwork_id=artwork_id,
+            clear_title=True,
+            clear_artist=True,
+        )
+
+        statement, params = session.execute.call_args.args
+        statement_text = str(statement)
+        self.assertIn("where auction_artwork_id = :artwork_id", statement_text)
+        self.assertNotIn("where lot_id", statement_text)
+        self.assertEqual(params, {"artwork_id": artwork_id})
 
     def test_fetch_html_uses_playwright(self) -> None:
         scraper = self._build_scraper()

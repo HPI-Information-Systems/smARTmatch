@@ -13,6 +13,10 @@ from .request_handler import request_html
 from .scraper import Scraper
 
 
+class UnsafePurgeError(RuntimeError):
+    """Raised when destructive replacement cannot be validated safely."""
+
+
 class AuctionPlatformScraper(Scraper):
     """Shared run/purge/request structure for auction-platform scrapers."""
 
@@ -64,15 +68,28 @@ class AuctionPlatformScraper(Scraper):
             self._run_with_session(skip=skip, report_every=report_every)
 
     def _run_with_session(self, *, skip: int, report_every: int) -> None:
-        if self.purge_before_run:
-            self.purge_existing_data()
-
         try:
-            self._prepare_run()
-
-            urls = list(self.get_urls(skip=skip))
-            self.stats = {"urls_total": len(urls), "urls_processed": 0}
-            self._publish_progress()
+            if self.purge_before_run:
+                session = self.db._get_session()
+                begin_nested = getattr(session, "begin_nested", None)
+                if not callable(begin_nested):
+                    raise UnsafePurgeError(
+                        "purge=True requires database savepoint support"
+                    )
+                with begin_nested():
+                    self.purge_existing_data()
+                    urls = self._discover_urls(skip=skip)
+                    if not urls:
+                        self.log(
+                            "[abort] purge discovery returned no URLs; "
+                            "existing platform data is preserved"
+                        )
+                        raise UnsafePurgeError(
+                            "Refusing to commit an auction-platform purge after "
+                            "empty discovery"
+                        )
+            else:
+                urls = self._discover_urls(skip=skip)
 
             if not urls:
                 self.log("[done] no URLs to scrape")
@@ -89,6 +106,13 @@ class AuctionPlatformScraper(Scraper):
             self._commit_batch()
         finally:
             self._after_run()
+
+    def _discover_urls(self, *, skip: int) -> list[str]:
+        self._prepare_run()
+        urls = list(self.get_urls(skip=skip))
+        self.stats = {"urls_total": len(urls), "urls_processed": 0}
+        self._publish_progress()
+        return urls
 
     def _prepare_run(self) -> None:
         """Optional hook: called once after purge and before collecting URLs."""

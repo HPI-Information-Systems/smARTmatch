@@ -170,9 +170,9 @@ class DorotheumScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
             image_paths=image_paths,
         )
 
-        if lot_id and (normalized_title is None or artist_id is None):
+        if normalized_title is None or artist_id is None:
             self._clear_missing_identity_columns(
-                lot_id=lot_id,
+                artwork_id=artwork.auction_artwork_id,
                 clear_title=normalized_title is None,
                 clear_artist=artist_id is None,
             )
@@ -184,7 +184,7 @@ class DorotheumScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
         return None
 
     def _clear_missing_identity_columns(
-        self, *, lot_id: str, clear_title: bool, clear_artist: bool
+        self, *, artwork_id: object, clear_title: bool, clear_artist: bool
     ) -> None:
         columns = self.db._get_table_columns("auction_artwork")
         assignments: list[str] = []
@@ -202,9 +202,10 @@ class DorotheumScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
 
         self.db._get_session().execute(
             text(
-                f"update auction_artwork set {', '.join(assignments)} where lot_id = :lot_id"
+                f"update auction_artwork set {', '.join(assignments)} "
+                "where auction_artwork_id = :artwork_id"
             ),
-            {"lot_id": lot_id},
+            {"artwork_id": artwork_id},
         )
 
     def _collect_page_lots(

@@ -8,7 +8,11 @@ from ..utils.auction_helpers import clean_whitespace, fit_varchar, json_dumps
 from ..utils.auction_scraper import AuctionPlatformScraper
 from .client import SothebysClient
 from .constants import BASE_CALENDAR_URL
-from .entities import build_auction_details, resolve_artist_id, resolve_default_auctioneer_id
+from .entities import (
+    build_auction_details,
+    resolve_artist_id,
+    resolve_default_auctioneer_id,
+)
 from .listing import get_existing_lot_ids, iter_auction_urls
 from .models import AuctionContext
 from .parser import SothebysLotParser
@@ -79,7 +83,9 @@ class SothebysScraper(AuctionPlatformScraper):
                 continue
 
             try:
-                lot_ids = self._client.fetch_auction_lot_ids(context.auction_id, language=self.language)
+                lot_ids = self._client.fetch_auction_lot_ids(
+                    context.auction_id, language=self.language
+                )
             except Exception as exc:
                 self.log(f"[lotcards] [fail] {auction_url}: {exc}")
                 continue
@@ -87,7 +93,9 @@ class SothebysScraper(AuctionPlatformScraper):
             if self.max_lots_per_auction is not None:
                 lot_ids = lot_ids[: max(0, int(self.max_lots_per_auction))]
 
-            self.log(f"[auction {auction_idx}/{len(auction_urls)}] {auction_url} -> {len(lot_ids)} lots")
+            self.log(
+                f"[auction {auction_idx}/{len(auction_urls)}] {auction_url} -> {len(lot_ids)} lots"
+            )
 
             for lot_id in lot_ids:
                 if lot_id in existing_lot_ids:
@@ -105,7 +113,9 @@ class SothebysScraper(AuctionPlatformScraper):
             self.log(f"[skip] {self._skipped_existing} already-scraped lots")
 
     def scrape_url(self, url: str):
-        lot_response = self._client.fetch_lot_response(lot_id=url, country=self.country, language=self.language)
+        lot_response = self._client.fetch_lot_response(
+            lot_id=url, country=self.country, language=self.language
+        )
         if lot_response is None:
             return None
 
@@ -137,7 +147,9 @@ class SothebysScraper(AuctionPlatformScraper):
             artist_id=artist_id,
             artist_full_name=artist_name,
             artist_raw_data=(
-                json_dumps({"source": "sothebys", "name": artist_name}) if artist_name else None
+                json_dumps({"source": "sothebys", "name": artist_name})
+                if artist_name
+                else None
             ),
             description=lot.description,
             provenance=lot.provenance,
@@ -148,8 +160,8 @@ class SothebysScraper(AuctionPlatformScraper):
             auctioneer_id=self._auctioneer_id,
             raw_data=lot.raw_data,
         )
-        self.db.set_auction_artwork_images(
-            auction_artwork_id=artwork.auction_artwork_id,
+        self.set_lot_images(
+            artwork_id=artwork.auction_artwork_id,
             image_paths=local_images,
         )
 

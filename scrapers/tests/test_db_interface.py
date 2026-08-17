@@ -96,7 +96,9 @@ class DatabaseEnvironmentTests(unittest.TestCase):
 
 
 class DatabaseArtistTests(unittest.TestCase):
-    def test_get_or_create_artist_does_not_pass_variant_name_to_artist_model(self) -> None:
+    def test_get_or_create_artist_does_not_pass_variant_name_to_artist_model(
+        self,
+    ) -> None:
         db = Database.__new__(Database)
         fake_session = _FakeSession()
         db._get_session = lambda: fake_session  # type: ignore[attr-defined]
@@ -120,7 +122,9 @@ class DatabaseArtistTests(unittest.TestCase):
 
         with (
             patch("scrapers.db_interface.Artist", _FakeArtistModel),
-            patch("scrapers.db_interface.select", lambda *args, **kwargs: _FakeSelect()),
+            patch(
+                "scrapers.db_interface.select", lambda *args, **kwargs: _FakeSelect()
+            ),
         ):
             artist = Database.get_or_create_artist(
                 db,
@@ -133,7 +137,9 @@ class DatabaseArtistTests(unittest.TestCase):
         self.assertTrue(fake_session.flushed)
         self.assertEqual(len(fake_session.added), 3)
         variant_rows = fake_session.added[1:]
-        self.assertEqual([row.name_variant for row in variant_rows], ["J. Doe", "Jane D."])
+        self.assertEqual(
+            [row.name_variant for row in variant_rows], ["J. Doe", "Jane D."]
+        )
 
 
 class DatabaseCaseInsensitiveLookupTests(unittest.TestCase):
@@ -245,7 +251,9 @@ class DatabaseCaseInsensitiveLookupTests(unittest.TestCase):
                 self.added.append(instance)
 
             def flush(self) -> None:
-                raise AssertionError("flush should not run when auctioneer already exists")
+                raise AssertionError(
+                    "flush should not run when auctioneer already exists"
+                )
 
         session = ExistingSession()
         db._get_session = lambda: session  # type: ignore[attr-defined]
@@ -258,6 +266,130 @@ class DatabaseCaseInsensitiveLookupTests(unittest.TestCase):
 
 
 class DatabaseAuctionArtworkTests(unittest.TestCase):
+    def test_non_authoritative_legacy_reconcile_merges_successful_paths(self) -> None:
+        db = Database.__new__(Database)
+        updates: list[object] = []
+
+        class FakeSession:
+            def execute(self, stmt, params=None):
+                sql = str(stmt)
+                if "select img_paths" in sql:
+                    return _ExistingResult(["legacy.jpg"])
+                if "update auction_artwork" in sql:
+                    updates.append(params)
+                    return _ScalarResult()
+                raise AssertionError(f"Unexpected SQL: {sql}")
+
+        def has_columns(table_name, columns):
+            return table_name == "auction_artwork" and columns == {"img_paths"}
+
+        db._get_session = lambda: FakeSession()  # type: ignore[attr-defined]
+        db._table_has_columns = has_columns  # type: ignore[attr-defined]
+
+        Database.set_auction_artwork_images(
+            db,
+            auction_artwork_id="artwork-id",
+            image_paths=["replacement.jpg"],
+            authoritative=False,
+        )
+
+        self.assertEqual(
+            updates,
+            [
+                {
+                    "img_paths": ["legacy.jpg", "replacement.jpg"],
+                    "auction_artwork_id": "artwork-id",
+                }
+            ],
+        )
+
+    def test_non_authoritative_image_reconcile_retains_existing_links(self) -> None:
+        db = Database.__new__(Database)
+        executed: list[tuple[str, object]] = []
+
+        class ExistingImagesResult:
+            def scalars(self):
+                return self
+
+            def all(self):
+                return ["legacy-image-id"]
+
+        class FakeSession:
+            def execute(self, stmt, params=None):
+                sql = str(stmt)
+                executed.append((sql, params))
+                if "select image_file_id" in sql:
+                    return ExistingImagesResult()
+                if "insert into auction_artwork_image_file" in sql:
+                    return _ScalarResult()
+                raise AssertionError(f"Unexpected SQL: {sql}")
+
+        db._get_session = lambda: FakeSession()  # type: ignore[attr-defined]
+        db._table_has_columns = lambda *args, **kwargs: True  # type: ignore[attr-defined]
+        db._get_table_columns = lambda *args: {  # type: ignore[attr-defined]
+            "auction_artwork_id",
+            "image_file_id",
+        }
+        db._ensure_image_file_id = (  # type: ignore[attr-defined]
+            lambda **kwargs: "replacement-image-id"
+        )
+
+        Database.set_auction_artwork_images(
+            db,
+            auction_artwork_id="artwork-id",
+            image_paths=["replacement.jpg"],
+            image_source_urls={"replacement.jpg": "https://example.org/new.jpg"},
+            authoritative=False,
+        )
+
+        statements = [sql.lower() for sql, _ in executed]
+        self.assertFalse(
+            any("delete from auction_artwork_image_file" in sql for sql in statements)
+        )
+        self.assertTrue(
+            any("insert into auction_artwork_image_file" in sql for sql in statements)
+        )
+
+    def test_authoritative_image_reconcile_removes_superseded_links(self) -> None:
+        db = Database.__new__(Database)
+        executed: list[str] = []
+
+        class ExistingImagesResult:
+            def scalars(self):
+                return self
+
+            def all(self):
+                return ["legacy-image-id"]
+
+        class FakeSession:
+            def execute(self, stmt, params=None):
+                del params
+                sql = str(stmt)
+                executed.append(sql)
+                if "select image_file_id" in sql:
+                    return ExistingImagesResult()
+                if "delete from auction_artwork_image_file" in sql:
+                    return _ScalarResult()
+                raise AssertionError(f"Unexpected SQL: {sql}")
+
+        db._get_session = lambda: FakeSession()  # type: ignore[attr-defined]
+        db._table_has_columns = lambda *args, **kwargs: True  # type: ignore[attr-defined]
+        db._get_table_columns = lambda *args: set()  # type: ignore[attr-defined]
+
+        Database.set_auction_artwork_images(
+            db,
+            auction_artwork_id="artwork-id",
+            image_paths=[],
+            authoritative=True,
+        )
+
+        self.assertTrue(
+            any(
+                "delete from auction_artwork_image_file" in sql.lower()
+                for sql in executed
+            )
+        )
+
     def test_upsert_auction_artwork_filters_to_live_columns(self) -> None:
         db = Database.__new__(Database)
         executed = []
@@ -304,7 +436,9 @@ class DatabaseAuctionArtworkTests(unittest.TestCase):
         self.assertEqual(insert_params["title"], "Example")
         self.assertEqual(insert_params["raw_data"], '{"ok":true}')
 
-    def test_upsert_auction_artwork_scopes_lookup_by_platform_when_available(self) -> None:
+    def test_upsert_auction_artwork_scopes_lookup_by_platform_when_available(
+        self,
+    ) -> None:
         db = Database.__new__(Database)
         executed = []
 
@@ -395,14 +529,22 @@ class DatabaseAuctionArtworkTests(unittest.TestCase):
                             ("auction_platform_id",),
                         ]
                     )
-                if "select auction_artwork_id from auction_artwork" in sql and "where lot_url" in sql:
+                if (
+                    "select auction_artwork_id from auction_artwork" in sql
+                    and "where lot_url" in sql
+                ):
                     return _ScalarResult()
-                if "select auction_artwork_id from auction_artwork" in sql and "where lot_id" in sql:
+                if (
+                    "select auction_artwork_id from auction_artwork" in sql
+                    and "where lot_id" in sql
+                ):
                     return _ExistingResult("existing-artwork-id")
                 if "update auction_artwork set" in sql:
                     return _ScalarResult()
                 if "insert into auction_artwork" in sql:
-                    raise AssertionError("insert should not run when lot_id lookup finds an existing row")
+                    raise AssertionError(
+                        "insert should not run when lot_id lookup finds an existing row"
+                    )
                 raise AssertionError(f"Unexpected SQL: {sql}")
 
         db._get_session = lambda: FakeSession()  # type: ignore[attr-defined]
@@ -449,10 +591,16 @@ class DatabaseAuctionArtworkTests(unittest.TestCase):
                         ]
                     )
 
-                if "select auction_artwork_id from auction_artwork" in sql and "where lot_url" in sql:
+                if (
+                    "select auction_artwork_id from auction_artwork" in sql
+                    and "where lot_url" in sql
+                ):
                     return _ScalarResult()
 
-                if "select auction_artwork_id from auction_artwork" in sql and "where lot_id" in sql:
+                if (
+                    "select auction_artwork_id from auction_artwork" in sql
+                    and "where lot_id" in sql
+                ):
                     self.lot_id_lookup_calls += 1
                     if self.lot_id_lookup_calls >= 2:
                         return _ExistingResult("existing-artwork-id")
@@ -488,7 +636,9 @@ class DatabaseAuctionArtworkTests(unittest.TestCase):
             "Expected an update after conflict recovery",
         )
 
-    def test_upsert_auction_artwork_forwards_img_paths_to_image_link_writer(self) -> None:
+    def test_upsert_auction_artwork_forwards_img_paths_to_image_link_writer(
+        self,
+    ) -> None:
         db = Database.__new__(Database)
         image_calls = []
 
@@ -541,7 +691,9 @@ class DatabaseLostArtworkTests(unittest.TestCase):
                 self.flushed = True
 
         session = FakeSession()
-        existing = type("ExistingLost", (), {"lost_artwork_id": "lost-1", "title": "old"})()
+        existing = type(
+            "ExistingLost", (), {"lost_artwork_id": "lost-1", "title": "old"}
+        )()
 
         db._get_session = lambda: session  # type: ignore[attr-defined]
         db.find_lost_artwork_by_lost_art_id = (  # type: ignore[attr-defined]

@@ -120,11 +120,15 @@ class ChristiesScraper(AuctionPlatformScraper):
         if not lot_data:
             return None
 
-        page_title, page_artist = self.lot_parser.extract_title_artist_from_webpage(lot_url)
-        page_title, page_artist, suppress_payload_artist = self._normalize_page_title_artist(
-            lot_data=lot_data,
-            page_title=page_title,
-            page_artist=page_artist,
+        page_title, page_artist = self.lot_parser.extract_title_artist_from_webpage(
+            lot_url
+        )
+        page_title, page_artist, suppress_payload_artist = (
+            self._normalize_page_title_artist(
+                lot_data=lot_data,
+                page_title=page_title,
+                page_artist=page_artist,
+            )
         )
         fields = resolve_lot_fields(
             lot_id=lot_id,
@@ -204,8 +208,8 @@ class ChristiesScraper(AuctionPlatformScraper):
             artist_id=artist_id,
             raw_data=stringify_dict(raw_data),
         )
-        self.db.set_auction_artwork_images(
-            auction_artwork_id=artwork.auction_artwork_id,
+        self.set_lot_images(
+            artwork_id=artwork.auction_artwork_id,
             image_paths=image_paths,
         )
 
@@ -327,8 +331,12 @@ class ChristiesScraper(AuctionPlatformScraper):
         )
 
     # Compatibility wrappers for existing tests/helpers.
-    def _extract_title_artist_from_soup(self, soup: BeautifulSoup) -> tuple[Optional[str], Optional[str]]:
+    def _extract_title_artist_from_soup(
+        self, soup: BeautifulSoup
+    ) -> tuple[Optional[str], Optional[str]]:
         return self.lot_parser.extract_title_artist_from_soup(soup)
 
-    def _extract_title_artist_from_webpage(self, lot_url: str) -> tuple[Optional[str], Optional[str]]:
+    def _extract_title_artist_from_webpage(
+        self, lot_url: str
+    ) -> tuple[Optional[str], Optional[str]]:
         return self.lot_parser.extract_title_artist_from_webpage(lot_url)

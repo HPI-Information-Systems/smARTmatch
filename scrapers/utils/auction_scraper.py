@@ -153,7 +153,12 @@ class AuctionPlatformScraper(Scraper):
         lot_url: str | None = None,
         artwork_id: UUID | None = None,
     ) -> list[str]:
-        if not self.download_images_enabled or not image_urls:
+        self.last_downloaded_image_sources = {}
+        if not image_urls:
+            self.last_image_download_complete = True
+            return []
+        if not self.download_images_enabled:
+            self.last_image_download_complete = False
             return []
 
         storage_id = artwork_id or self.resolve_storage_artwork_id(
@@ -167,9 +172,25 @@ class AuctionPlatformScraper(Scraper):
                 image_urls,
                 self.images_dir,
                 prefix,
-                include_url_hash=False,
+                include_url_hash=True,
             )
         except Exception as exc:
+            self.last_image_download_complete = False
             lot_display = lot_id or lot_url or "unknown"
             self.log(f"[fail] images for lot {lot_display}: {exc}")
             return []
+
+    def set_lot_images(
+        self,
+        *,
+        artwork_id: UUID | object,
+        image_paths: Sequence[str],
+    ) -> None:
+        """Persist downloads, removing old links only after complete success."""
+
+        self.db.set_auction_artwork_images(
+            auction_artwork_id=artwork_id,
+            image_paths=image_paths,
+            image_source_urls=self.last_downloaded_image_sources,
+            authoritative=self.last_image_download_complete,
+        )

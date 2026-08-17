@@ -39,7 +39,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Optional, Sequence, Type, TypeVar
+from typing import Mapping, Optional, Sequence, Type, TypeVar
 from uuid import UUID
 
 from sqlalchemy import create_engine, func, select, text
@@ -459,8 +459,7 @@ class Database:
         if self._model_matches_live_table(table_name="artist", model=Artist):
             artist = self._execute_first_or_none(
                 select(Artist).where(
-                    func.lower(Artist.complete_name)
-                    == normalized_complete_name.lower()
+                    func.lower(Artist.complete_name) == normalized_complete_name.lower()
                 )
             )
 
@@ -590,7 +589,9 @@ class Database:
                         },
                     )
 
-        return SimpleNamespace(artist_id=artist_id, complete_name=normalized_complete_name)
+        return SimpleNamespace(
+            artist_id=artist_id, complete_name=normalized_complete_name
+        )
 
     def get_or_create_auction_platform(self, name: str, **kwargs) -> AuctionPlatform:
         """Get or create an auction platform by name."""
@@ -786,15 +787,44 @@ class Database:
             {"file_path": file_path},
         ).scalar_one_or_none()
 
-    def _ensure_image_file_id(self, *, file_path: str) -> object | None:
+    def _ensure_image_file_id(
+        self,
+        *,
+        file_path: str,
+        source_url: str | None = None,
+    ) -> object | None:
+        session = self._get_session()
+        has_source_url = self._table_has_columns("image_file", {"source_url"})
         existing_id = self._image_file_id_by_path(file_path=file_path)
         if existing_id is not None:
+            if has_source_url and source_url:
+                session.execute(
+                    text(
+                        """
+                        update image_file
+                        set source_url = :source_url
+                        where image_file_id = :image_file_id
+                          and source_url is distinct from :source_url
+                        """
+                    ),
+                    {"source_url": source_url, "image_file_id": existing_id},
+                )
             return existing_id
 
-        session = self._get_session()
         savepoint_ctx, has_savepoint = self._savepoint_context(session)
         try:
             with savepoint_ctx:
+                if has_source_url:
+                    return session.execute(
+                        text(
+                            """
+                            insert into image_file (file_path, source_url)
+                            values (:file_path, :source_url)
+                            returning image_file_id
+                            """
+                        ),
+                        {"file_path": file_path, "source_url": source_url},
+                    ).scalar_one()
                 return session.execute(
                     text(
                         """
@@ -816,7 +846,10 @@ class Database:
         *,
         auction_artwork_id: UUID | object,
         image_paths: Sequence[str] | None,
+        image_source_urls: Mapping[str, str] | None = None,
+        authoritative: bool = True,
     ) -> None:
+        """Reconcile image links, preserving old links after incomplete downloads."""
         session = self._get_session()
         normalized_paths = self._normalize_image_paths(image_paths)
 
@@ -831,6 +864,20 @@ class Database:
 
         if not (has_image_file and has_link_table):
             if self._table_has_columns("auction_artwork", {"img_paths"}):
+                if not authoritative:
+                    existing_paths = session.execute(
+                        text(
+                            """
+                            select img_paths
+                            from auction_artwork
+                            where auction_artwork_id = :auction_artwork_id
+                            """
+                        ),
+                        {"auction_artwork_id": auction_artwork_id},
+                    ).scalar_one_or_none()
+                    normalized_paths = self._normalize_image_paths(
+                        [*(existing_paths or []), *normalized_paths]
+                    )
                 session.execute(
                     text(
                         """
@@ -849,7 +896,10 @@ class Database:
         desired_ids: list[object] = []
         desired_set: set[object] = set()
         for image_path in normalized_paths:
-            image_file_id = self._ensure_image_file_id(file_path=image_path)
+            image_file_id = self._ensure_image_file_id(
+                file_path=image_path,
+                source_url=(image_source_urls or {}).get(image_path),
+            )
             if image_file_id is None or image_file_id in desired_set:
                 continue
             desired_set.add(image_file_id)
@@ -870,20 +920,21 @@ class Database:
             .all()
         )
 
-        for image_file_id in existing_ids - desired_set:
-            session.execute(
-                text(
-                    """
-                    delete from auction_artwork_image_file
-                    where auction_artwork_id = :auction_artwork_id
-                      and image_file_id = :image_file_id
-                    """
-                ),
-                {
-                    "auction_artwork_id": auction_artwork_id,
-                    "image_file_id": image_file_id,
-                },
-            )
+        if authoritative:
+            for image_file_id in existing_ids - desired_set:
+                session.execute(
+                    text(
+                        """
+                        delete from auction_artwork_image_file
+                        where auction_artwork_id = :auction_artwork_id
+                          and image_file_id = :image_file_id
+                        """
+                    ),
+                    {
+                        "auction_artwork_id": auction_artwork_id,
+                        "image_file_id": image_file_id,
+                    },
+                )
 
         link_columns = self._get_table_columns("auction_artwork_image_file")
         for image_file_id in desired_ids:
@@ -929,6 +980,7 @@ class Database:
         *,
         lost_artwork_id: UUID | object,
         image_paths: Sequence[str] | None,
+        image_source_urls: Mapping[str, str] | None = None,
     ) -> None:
         session = self._get_session()
         normalized_paths = self._normalize_image_paths(image_paths)
@@ -962,7 +1014,10 @@ class Database:
         desired_ids: list[object] = []
         desired_set: set[object] = set()
         for image_path in normalized_paths:
-            image_file_id = self._ensure_image_file_id(file_path=image_path)
+            image_file_id = self._ensure_image_file_id(
+                file_path=image_path,
+                source_url=(image_source_urls or {}).get(image_path),
+            )
             if image_file_id is None or image_file_id in desired_set:
                 continue
             desired_set.add(image_file_id)

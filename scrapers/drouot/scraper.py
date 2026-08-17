@@ -69,7 +69,9 @@ class DrouotScraper(AuctionPlatformScraper):
                 new_on_page += 1
 
             total = self.max_pages if self.max_pages is not None else "?"
-            self.log(f"[page {idx}/{total}] collected {len(lot_urls)} unique lot URLs so far")
+            self.log(
+                f"[page {idx}/{total}] collected {len(lot_urls)} unique lot URLs so far"
+            )
 
             # Stop if the platform starts repeating already-seen pages.
             if new_on_page == 0:
@@ -121,7 +123,9 @@ class DrouotScraper(AuctionPlatformScraper):
             artist_id=artist_id,
             artist_full_name=artist_name,
             artist_raw_data=(
-                json_dumps({"source": "drouot", "name": artist_name}) if artist_name else None
+                json_dumps({"source": "drouot", "name": artist_name})
+                if artist_name
+                else None
             ),
             description=lot.description,
             auction_details=json_dumps(build_auction_details(lot)),
@@ -130,8 +134,8 @@ class DrouotScraper(AuctionPlatformScraper):
             auctioneer_id=auctioneer_id,
             raw_data=lot.raw_data,
         )
-        self.db.set_auction_artwork_images(
-            auction_artwork_id=artwork.auction_artwork_id,
+        self.set_lot_images(
+            artwork_id=artwork.auction_artwork_id,
             image_paths=image_paths,
         )
 
@@ -153,9 +157,20 @@ class DrouotScraper(AuctionPlatformScraper):
         params = parse_qs(parsed.query, keep_blank_values=True)
         params["page"] = [str(page)]
         query = urlencode(params, doseq=True)
-        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, query, parsed.fragment))
+        return urlunparse(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                parsed.params,
+                query,
+                parsed.fragment,
+            )
+        )
 
-    def _derive_artist_and_title(self, display_title: str, description: str) -> tuple[str, Optional[str]]:
+    def _derive_artist_and_title(
+        self, display_title: str, description: str
+    ) -> tuple[str, Optional[str]]:
         return self._parser._derive_artist_and_title(display_title, description)
 
     def _build_raw_payload(

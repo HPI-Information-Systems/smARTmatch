@@ -15,6 +15,7 @@ import logging
 from abc import ABC, abstractmethod
 from io import BytesIO
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 import time
 from typing import Callable, Iterable, Optional, Sequence, Union
 
@@ -93,6 +94,8 @@ class Scraper(ABC):
         self.db = db or Database()
         self.stats: dict = {"urls_total": 0, "urls_processed": 0}
         self.log_prefix = log_prefix
+        self.last_downloaded_image_sources: dict[str, str] = {}
+        self.last_image_download_complete = True
         # Optional observers set by the orchestrator. The pre-commit fence
         # prevents writes after a worker loses its cross-process ownership lock;
         # the progress and post-commit observers persist shared run counters.
@@ -231,6 +234,8 @@ class Scraper(ABC):
         file_prefix = safe_image_prefix(prefix)
 
         local_paths: list[str] = []
+        self.last_downloaded_image_sources = {}
+        self.last_image_download_complete = True
         # de-duplicate while preserving order
         seen: set[str] = set()
         deduped_urls: list[str] = []
@@ -241,32 +246,71 @@ class Scraper(ABC):
             deduped_urls.append(url)
 
         for idx, url in enumerate(deduped_urls):
-            if include_url_hash:
-                url_hash = hashlib.sha1(url.encode("utf-8")).hexdigest()[:10]
-                filename = f"{file_prefix}_{idx}_{url_hash}.jpg"
-            else:
-                filename = f"{file_prefix}_{idx}.jpg"
-            filepath = dest / filename
-            if filepath.exists():
-                local_paths.append(_relative_path(filepath))
-                continue
+            try:
+                if include_url_hash:
+                    url_hash = hashlib.sha1(url.encode("utf-8")).hexdigest()[:10]
+                    filename = f"{file_prefix}_{idx}_{url_hash}.jpg"
+                else:
+                    filename = f"{file_prefix}_{idx}.jpg"
+                filepath = dest / filename
+                if filepath.exists() and _is_valid_cached_jpeg(filepath):
+                    relative_path = _relative_path(filepath)
+                    local_paths.append(relative_path)
+                    self.last_downloaded_image_sources[relative_path] = url
+                    continue
+                if filepath.exists():
+                    self.log(f"[retry] invalid cached image {filepath}")
 
-            self.log(f"[get image] {url}")
-            content = request_image(url, log=self.log)
-            if not content:
-                self.log(f"[skip] image {url}")
-                continue
+                self.log(f"[get image] {url}")
+                content = request_image(url, log=self.log)
+                if not content:
+                    self.last_image_download_complete = False
+                    self.log(f"[skip] image {url}")
+                    continue
 
-            jpeg_bytes = _to_jpeg_bytes(content)
-            if jpeg_bytes is None:
-                self.log(f"[skip] image {url} (invalid/unsupported data)")
-                continue
+                jpeg_bytes = _to_jpeg_bytes(content)
+                if jpeg_bytes is None:
+                    self.last_image_download_complete = False
+                    self.log(f"[skip] image {url} (invalid/unsupported data)")
+                    continue
 
-            with open(filepath, "wb") as f:
-                f.write(jpeg_bytes)
-            local_paths.append(_relative_path(filepath))
+                _write_bytes_atomically(filepath, jpeg_bytes)
+                relative_path = _relative_path(filepath)
+                local_paths.append(relative_path)
+                self.last_downloaded_image_sources[relative_path] = url
+            except Exception as exc:
+                self.last_image_download_complete = False
+                self.log(f"[skip] image {url} ({type(exc).__name__})")
+                continue
 
         return local_paths
+
+
+def _is_valid_cached_jpeg(filepath: Path) -> bool:
+    try:
+        with Image.open(filepath) as image:
+            image.verify()
+            return image.format == "JPEG"
+    except (OSError, UnidentifiedImageError, ValueError):
+        return False
+
+
+def _write_bytes_atomically(filepath: Path, content: bytes) -> None:
+    temporary_path: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            mode="wb",
+            dir=filepath.parent,
+            prefix=f".{filepath.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            temporary.write(content)
+        temporary_path.replace(filepath)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def _to_jpeg_bytes(raw_bytes: bytes) -> bytes | None:
@@ -278,7 +322,9 @@ def _to_jpeg_bytes(raw_bytes: bytes) -> bytes | None:
 
             width, height = image.size
             if width > _MAX_IMAGE_WIDTH_PX and width > 0:
-                resized_height = max(1, int(round((height * _MAX_IMAGE_WIDTH_PX) / width)))
+                resized_height = max(
+                    1, int(round((height * _MAX_IMAGE_WIDTH_PX) / width))
+                )
                 image = image.resize(
                     (_MAX_IMAGE_WIDTH_PX, resized_height),
                     resample=Image.Resampling.LANCZOS,

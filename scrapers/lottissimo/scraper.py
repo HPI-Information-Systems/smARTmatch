@@ -228,8 +228,8 @@ class LottissimoScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
             auctioneer_id=auctioneer_id,
             raw_data=lot.raw_data,
         )
-        self.db.set_auction_artwork_images(
-            auction_artwork_id=artwork.auction_artwork_id,
+        self.set_lot_images(
+            artwork_id=artwork.auction_artwork_id,
             image_paths=local_images,
         )
 

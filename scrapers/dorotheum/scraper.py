@@ -98,7 +98,9 @@ class DorotheumScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
 
             if idx > 1 and new_count == 0:
                 break
-            if self.max_lots is not None and len(lot_urls) >= self.max_lots + max(0, skip):
+            if self.max_lots is not None and len(lot_urls) >= self.max_lots + max(
+                0, skip
+            ):
                 break
 
         if skip:
@@ -115,7 +117,9 @@ class DorotheumScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
             return None
 
         listing_lot = self._listing_by_url.get(url)
-        lot = self._parser.parse_lot_page(html=html, lot_url=url, listing_lot=listing_lot)
+        lot = self._parser.parse_lot_page(
+            html=html, lot_url=url, listing_lot=listing_lot
+        )
         if lot is None:
             return None
 
@@ -149,7 +153,9 @@ class DorotheumScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
             artist_id=artist_id,
             artist_full_name=artist_name,
             artist_raw_data=(
-                json_dumps({"source": "dorotheum", "name": artist_name}) if artist_name else None
+                json_dumps({"source": "dorotheum", "name": artist_name})
+                if artist_name
+                else None
             ),
             description=lot.description,
             auction_details=json_dumps(build_auction_details(lot)),
@@ -159,8 +165,8 @@ class DorotheumScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
             expert_id=expert_id,
             raw_data=lot.raw_data,
         )
-        self.db.set_auction_artwork_images(
-            auction_artwork_id=artwork.auction_artwork_id,
+        self.set_lot_images(
+            artwork_id=artwork.auction_artwork_id,
             image_paths=image_paths,
         )
 
@@ -172,10 +178,14 @@ class DorotheumScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
             )
 
         self._processed += 1
-        self.log(f"[save] lot {lot.lot_id or lot.lot_uid} ({self._processed} processed)")
+        self.log(
+            f"[save] lot {lot.lot_id or lot.lot_uid} ({self._processed} processed)"
+        )
         return None
 
-    def _clear_missing_identity_columns(self, *, lot_id: str, clear_title: bool, clear_artist: bool) -> None:
+    def _clear_missing_identity_columns(
+        self, *, lot_id: str, clear_title: bool, clear_artist: bool
+    ) -> None:
         columns = self.db._get_table_columns("auction_artwork")
         assignments: list[str] = []
 
@@ -191,14 +201,20 @@ class DorotheumScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
             return
 
         self.db._get_session().execute(
-            text(f"update auction_artwork set {', '.join(assignments)} where lot_id = :lot_id"),
+            text(
+                f"update auction_artwork set {', '.join(assignments)} where lot_id = :lot_id"
+            ),
             {"lot_id": lot_id},
         )
 
-    def _collect_page_lots(self, *, html: str, lot_urls: list[str], seen: set[str]) -> int:
+    def _collect_page_lots(
+        self, *, html: str, lot_urls: list[str], seen: set[str]
+    ) -> int:
         listing_lots = self._parser.extract_listing_lots(html)
         if listing_lots:
-            return self._append_listing_lots(listing_lots=listing_lots, lot_urls=lot_urls, seen=seen)
+            return self._append_listing_lots(
+                listing_lots=listing_lots, lot_urls=lot_urls, seen=seen
+            )
 
         fallback_urls = self._parser.extract_lot_urls(html)
         return self._append_lot_urls(urls=fallback_urls, lot_urls=lot_urls, seen=seen)
@@ -222,7 +238,9 @@ class DorotheumScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
         return new_count
 
     @staticmethod
-    def _append_lot_urls(*, urls: list[str], lot_urls: list[str], seen: set[str]) -> int:
+    def _append_lot_urls(
+        *, urls: list[str], lot_urls: list[str], seen: set[str]
+    ) -> int:
         new_count = 0
         for lot_url in urls:
             if lot_url in seen:
@@ -247,7 +265,16 @@ class DorotheumScraper(PlaywrightFetchMixin, AuctionPlatformScraper):
         params = parse_qs(parsed.query, keep_blank_values=True)
         params["page"] = [str(page)]
         query = urlencode(params, doseq=True)
-        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, query, parsed.fragment))
+        return urlunparse(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                parsed.params,
+                query,
+                parsed.fragment,
+            )
+        )
 
     @staticmethod
     def _resolve_cookie_header(cookie_header: Optional[str]) -> str:

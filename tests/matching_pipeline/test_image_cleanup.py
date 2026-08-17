@@ -22,11 +22,13 @@ class _Cursor:
         lock_acquired: bool = True,
         active_scraper: bool = False,
         mark_result_ids: list[int] | None = None,
+        recovery_rows: list[tuple[int, str | None, bool]] | None = None,
     ) -> None:
         self.rows = list(rows)
         self.lock_acquired = lock_acquired
         self.active_scraper = active_scraper
         self.mark_result_ids = mark_result_ids
+        self.recovery_rows = list(recovery_rows or [])
         self.execute_calls: list[tuple[str, object]] = []
         self.marked_image_file_ids: list[int] = []
         self._last_sql = ""
@@ -50,6 +52,8 @@ class _Cursor:
         return (self.active_scraper,)
 
     def fetchall(self):
+        if "cleaned_up_at IS NOT NULL" in self._last_sql:
+            return list(self.recovery_rows)
         if "UPDATE image_file" in self._last_sql:
             image_file_ids = (
                 self.marked_image_file_ids
@@ -62,8 +66,16 @@ class _Cursor:
 
 
 class _Connection:
-    def __init__(self, cursor: _Cursor) -> None:
+    def __init__(
+        self,
+        cursor: _Cursor,
+        *,
+        commit_error: Exception | None = None,
+        rollback_error: Exception | None = None,
+    ) -> None:
         self.cursor_instance = cursor
+        self.commit_error = commit_error
+        self.rollback_error = rollback_error
         self.commit_count = 0
         self.rollback_count = 0
         self.close_count = 0
@@ -72,9 +84,13 @@ class _Connection:
         return self.cursor_instance
 
     def commit(self) -> None:
+        if self.commit_error is not None:
+            raise self.commit_error
         self.commit_count += 1
 
     def rollback(self) -> None:
+        if self.rollback_error is not None:
+            raise self.rollback_error
         self.rollback_count += 1
 
     def close(self) -> None:
@@ -108,12 +124,14 @@ def _run(
     lock_acquired: bool = True,
     active_scraper: bool = False,
     mark_result_ids: list[int] | None = None,
+    recovery_rows: list[tuple[int, str | None, bool]] | None = None,
 ):
     cursor = _Cursor(
         rows,
         lock_acquired=lock_acquired,
         active_scraper=active_scraper,
         mark_result_ids=mark_result_ids,
+        recovery_rows=recovery_rows,
     )
     connection = _Connection(cursor)
     with mock.patch.object(cleanup, "connect_db", return_value=connection):
@@ -187,6 +205,7 @@ def test_apply_deletes_and_marks_only_unmatched_image_rows():
         assert connection.commit_count == 1
         assert connection.rollback_count == 0
         assert connection.close_count == 1
+        assert not (root / cleanup._QUARANTINE_DIR_NAME).exists()
 
         sql_statements = [sql for sql, _params in cursor.execute_calls]
         assert any("LOCK TABLE scraper_run" in sql for sql in sql_statements)
@@ -381,10 +400,246 @@ def test_database_marker_mismatch_rolls_back_and_fails_loudly():
         ):
             cleanup.cleanup_unmatched_auction_images(image_root=root, apply=True)
 
-        assert not path.exists()
+        assert path.read_bytes() == b"delete"
+        assert not (root / cleanup._QUARANTINE_DIR_NAME).exists()
         assert connection.commit_count == 0
         assert connection.rollback_count == 1
         assert connection.close_count == 1
+
+
+def test_commit_exception_stays_journaled_even_when_rollback_returns():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        root = Path(tmp_dir)
+        path = root / "candidate.jpg"
+        path.write_bytes(b"committed despite response loss")
+        cursor = _Cursor([_row(1, path, candidate=True)])
+        failed_connection = _Connection(
+            cursor,
+            commit_error=RuntimeError("commit response lost"),
+        )
+
+        with mock.patch.object(
+            cleanup, "connect_db", return_value=failed_connection
+        ), pytest.raises(RuntimeError, match="commit response lost"):
+            cleanup.cleanup_unmatched_auction_images(image_root=root, apply=True)
+
+        assert not path.exists()
+        assert (root / cleanup._QUARANTINE_DIR_NAME).is_dir()
+        assert failed_connection.rollback_count == 1
+
+        recovery_cursor = _Cursor([], recovery_rows=[(1, None, True)])
+        recovery_connection = _Connection(recovery_cursor)
+        with mock.patch.object(
+            cleanup, "connect_db", return_value=recovery_connection
+        ):
+            cleanup.cleanup_unmatched_auction_images(image_root=root, apply=True)
+
+        assert not path.exists()
+        assert not (root / cleanup._QUARANTINE_DIR_NAME).exists()
+
+
+def test_ambiguous_commit_failure_is_reconciled_on_next_cleanup():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        root = Path(tmp_dir)
+        path = root / "candidate.jpg"
+        path.write_bytes(b"recover later")
+        cursor = _Cursor([_row(1, path, candidate=True)])
+        failed_connection = _Connection(
+            cursor,
+            commit_error=RuntimeError("commit response lost"),
+            rollback_error=RuntimeError("connection lost"),
+        )
+
+        with mock.patch.object(
+            cleanup, "connect_db", return_value=failed_connection
+        ), pytest.raises(RuntimeError, match="commit response lost"):
+            cleanup.cleanup_unmatched_auction_images(image_root=root, apply=True)
+
+        assert not path.exists()
+        assert (root / cleanup._QUARANTINE_DIR_NAME).is_dir()
+
+        recovery_cursor = _Cursor(
+            [],
+            recovery_rows=[(1, str(path), False)],
+        )
+        recovery_connection = _Connection(recovery_cursor)
+        with mock.patch.object(
+            cleanup, "connect_db", return_value=recovery_connection
+        ):
+            result = cleanup.cleanup_unmatched_auction_images(
+                image_root=root,
+                apply=True,
+            )
+
+        assert path.read_bytes() == b"recover later"
+        assert not (root / cleanup._QUARANTINE_DIR_NAME).exists()
+        assert result.cleaned_image_row_count == 0
+
+
+def test_ambiguous_recovery_accepts_aliases_to_same_canonical_target():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        root = Path(tmp_dir)
+        canonical = root / "canonical.jpg"
+        alias = root / "alias.jpg"
+        canonical.write_bytes(b"shared")
+        alias.symlink_to(canonical.name)
+        cursor = _Cursor(
+            [
+                _row(1, canonical, candidate=True),
+                _row(2, alias),
+            ]
+        )
+        failed_connection = _Connection(
+            cursor,
+            commit_error=RuntimeError("commit response lost"),
+            rollback_error=RuntimeError("connection lost"),
+        )
+        with mock.patch.object(
+            cleanup, "connect_db", return_value=failed_connection
+        ), pytest.raises(RuntimeError, match="commit response lost"):
+            cleanup.cleanup_unmatched_auction_images(image_root=root, apply=True)
+
+        recovery_cursor = _Cursor(
+            [],
+            recovery_rows=[
+                (1, str(canonical), False),
+                (2, str(alias), False),
+            ],
+        )
+        recovery_connection = _Connection(recovery_cursor)
+        with mock.patch.object(
+            cleanup, "connect_db", return_value=recovery_connection
+        ):
+            cleanup.cleanup_unmatched_auction_images(image_root=root, apply=True)
+
+        assert canonical.read_bytes() == b"shared"
+        assert alias.is_symlink()
+        assert not (root / cleanup._QUARANTINE_DIR_NAME).exists()
+
+
+def test_recovery_refuses_repointed_database_path_without_restoring_bytes():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        root = Path(tmp_dir)
+        original = root / "original.jpg"
+        repointed = root / "repointed.jpg"
+        original.write_bytes(b"quarantined")
+        repointed.write_bytes(b"new target")
+        cursor = _Cursor([_row(1, original, candidate=True)])
+        failed_connection = _Connection(
+            cursor,
+            commit_error=RuntimeError("commit response lost"),
+            rollback_error=RuntimeError("connection lost"),
+        )
+        with mock.patch.object(
+            cleanup, "connect_db", return_value=failed_connection
+        ), pytest.raises(RuntimeError, match="commit response lost"):
+            cleanup.cleanup_unmatched_auction_images(image_root=root, apply=True)
+
+        recovery_cursor = _Cursor(
+            [],
+            recovery_rows=[(1, str(repointed), False)],
+        )
+        recovery_connection = _Connection(recovery_cursor)
+        with mock.patch.object(
+            cleanup, "connect_db", return_value=recovery_connection
+        ), pytest.raises(RuntimeError, match="manual recovery"):
+            cleanup.cleanup_unmatched_auction_images(image_root=root, apply=True)
+
+        assert not original.exists()
+        assert repointed.read_bytes() == b"new target"
+        assert (root / cleanup._QUARANTINE_DIR_NAME).is_dir()
+
+
+def test_post_commit_purge_failure_is_completed_by_next_recovery():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        root = Path(tmp_dir)
+        path = root / "candidate.jpg"
+        path.write_bytes(b"purge me")
+        cursor = _Cursor([_row(1, path, candidate=True)])
+        committed_connection = _Connection(cursor)
+
+        with mock.patch.object(
+            cleanup, "connect_db", return_value=committed_connection
+        ), mock.patch.object(
+            cleanup,
+            "_purge_quarantined_files",
+            side_effect=RuntimeError("purge interrupted"),
+        ), pytest.raises(cleanup.CleanupPurgePending, match="markers committed"):
+            cleanup.cleanup_unmatched_auction_images(image_root=root, apply=True)
+
+        assert committed_connection.commit_count == 1
+        assert committed_connection.rollback_count == 0
+        assert not path.exists()
+        assert (root / cleanup._QUARANTINE_DIR_NAME).is_dir()
+
+        recovery_cursor = _Cursor(
+            [],
+            recovery_rows=[(1, None, True)],
+        )
+        recovery_connection = _Connection(recovery_cursor)
+        with mock.patch.object(
+            cleanup, "connect_db", return_value=recovery_connection
+        ):
+            result = cleanup.cleanup_unmatched_auction_images(
+                image_root=root,
+                apply=True,
+            )
+
+        assert not path.exists()
+        assert not (root / cleanup._QUARANTINE_DIR_NAME).exists()
+        assert result.cleaned_image_row_count == 0
+
+
+def test_oversized_journal_is_rejected_before_source_move():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        root = Path(tmp_dir)
+        path = root / "candidate.jpg"
+        path.write_bytes(b"keep")
+        rows = [
+            _row(image_file_id, path, candidate=True)
+            for image_file_id in range(1, 20)
+        ]
+
+        with mock.patch.object(
+            cleanup, "_MAX_JOURNAL_BYTES", 32
+        ), pytest.raises(RuntimeError, match="journal would exceed"):
+            _run(rows, root, apply=True)
+
+        assert path.read_bytes() == b"keep"
+        assert not (root / cleanup._QUARANTINE_DIR_NAME).exists()
+
+
+def test_final_component_replacement_is_not_committed_as_cleanup_target():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        root = Path(tmp_dir)
+        path = root / "candidate.jpg"
+        path.write_bytes(b"original")
+        real_rename = cleanup.os.rename
+
+        def replace_before_target_rename(source, destination, **kwargs):
+            if source == path.name:
+                path.unlink()
+                path.write_bytes(b"replacement")
+            return real_rename(source, destination, **kwargs)
+
+        with mock.patch.object(
+            cleanup.os,
+            "rename",
+            side_effect=replace_before_target_rename,
+        ):
+            result, connection, cursor = _run(
+                [_row(1, path, candidate=True)],
+                root,
+                apply=True,
+            )
+
+        assert path.read_bytes() == b"replacement"
+        assert result.unsafe_target_count == 1
+        assert result.cleaned_image_row_count == 0
+        assert connection.commit_count == 0
+        assert connection.rollback_count == 1
+        assert cursor.marked_image_file_ids == []
+        assert not (root / cleanup._QUARANTINE_DIR_NAME).exists()
 
 
 def test_out_of_root_symlink_and_directory_targets_are_rejected():
@@ -443,7 +698,14 @@ def test_unlink_failure_is_reported_and_file_remains():
         root = Path(tmp_dir)
         path = root / "permission.jpg"
         path.write_bytes(b"keep")
-        with mock.patch.object(cleanup.os, "unlink", side_effect=PermissionError("denied")):
+        real_rename = cleanup.os.rename
+
+        def deny_target_rename(source, destination, **kwargs):
+            if source == path.name:
+                raise PermissionError("denied")
+            return real_rename(source, destination, **kwargs)
+
+        with mock.patch.object(cleanup.os, "rename", side_effect=deny_target_rename):
             result, _connection, _cursor = _run(
                 [_row(1, path, candidate=True)],
                 root,

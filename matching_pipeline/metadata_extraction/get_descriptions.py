@@ -9,6 +9,7 @@ import logging
 import os
 from pathlib import Path
 
+from matching_pipeline.metadata_extraction.status import EXTRACTION_PARSED_FIELD
 from matching_pipeline.shared.db import connect as db_connect
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,7 @@ def get_descriptions(output_file: Path) -> None:
                     "literature": "",
                     "dating_start": None,
                     "dating_end": None,
+                    EXTRACTION_PARSED_FIELD: False,
                 }
                 for r in rows
             ]

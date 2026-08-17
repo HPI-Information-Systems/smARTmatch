@@ -172,11 +172,21 @@ def _run_vllm(
     return [o.outputs[0].text.strip() for o in outputs]
 
 
-def _run_transformers(groups: list, model_name: str, max_new_tokens: int) -> list[str]:
+def _run_transformers(
+    groups: list,
+    model_name: str,
+    device: str,
+    max_new_tokens: int,
+) -> list[str]:
     from transformers import AutoTokenizer, pipeline
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    pipe = pipeline("text-generation", model=model_name, tokenizer=tokenizer)
+    pipe = pipeline(
+        "text-generation",
+        model=model_name,
+        tokenizer=tokenizer,
+        device=device,
+    )
 
     results = []
     for i, group in enumerate(groups, 1):
@@ -256,7 +266,12 @@ def normalize_with_qwen(
                 max_new_tokens,
             )
             if backend == "vllm"
-            else _run_transformers(groups, model_name, max_new_tokens)
+            else _run_transformers(
+                groups,
+                model_name,
+                device_name,
+                max_new_tokens,
+            )
         )
         dt = time.perf_counter() - t0
 

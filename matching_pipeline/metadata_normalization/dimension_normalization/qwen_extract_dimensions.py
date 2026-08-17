@@ -250,7 +250,10 @@ def _run_vllm(
 
 
 def _run_transformers(
-    records: list[dict], model_name: str, max_new_tokens: int
+    records: list[dict],
+    model_name: str,
+    device: str,
+    max_new_tokens: int,
 ) -> list[str]:
     from transformers import AutoTokenizer, pipeline
 
@@ -259,6 +262,7 @@ def _run_transformers(
         "text-generation",
         model=model_name,
         tokenizer=tokenizer,
+        device=device,
         trust_remote_code=True,
     )
 
@@ -347,7 +351,12 @@ def normalize_with_qwen(
                 max_new_tokens,
             )
             if backend == "vllm"
-            else _run_transformers(to_process, model_name, max_new_tokens)
+            else _run_transformers(
+                to_process,
+                model_name,
+                device_name,
+                max_new_tokens,
+            )
         )
         dt = time.perf_counter() - t0
 

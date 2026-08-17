@@ -51,7 +51,7 @@ python -m matching_pipeline.metadata_matching
 python -m matching_pipeline.image_cleanup --apply
 ```
 
-`metadata_extraction` also invokes `metadata_normalization` using the generated JSONL handoff. The normalization package can be run directly for recovery with `python -m matching_pipeline.metadata_normalization` after a valid handoff exists.
+`metadata_extraction` also invokes `metadata_normalization` using the generated JSONL handoff. Each handoff record carries parse status: malformed or unparseable LLM responses remain extraction-pending for a later retry, while a valid expected JSON schema is complete even when all entity values are empty. The normalization package can be run directly for recovery with `python -m matching_pipeline.metadata_normalization` after a valid handoff exists.
 
 Stop the scheduler before manual writer runs. Only run image matching after successful blocking, and restart scheduled operation afterwards.
 

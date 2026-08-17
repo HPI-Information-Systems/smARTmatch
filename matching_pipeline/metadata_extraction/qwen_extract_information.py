@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from matching_pipeline.metadata_extraction.status import EXTRACTION_PARSED_FIELD
 from matching_pipeline.shared.env import get_model_config
 from matching_pipeline.shared.llm_runtime import create_vllm, is_debug_enabled
 
@@ -186,20 +187,28 @@ def build_user_prompt(text: str) -> str:
     return f"Now extract from this entry:\nINPUT TEXT:\n{text}"
 
 
-def extract_json_object_strings(s: str) -> List[str]:
-    """Return all valid JSON object substrings embedded in model output."""
+def _json_objects_with_spans(s: str) -> list[tuple[Dict[str, Any], int, int]]:
     decoder = json.JSONDecoder()
-    objects: List[str] = []
-    for i, ch in enumerate(s):
-        if ch != "{":
-            continue
+    objects: list[tuple[Dict[str, Any], int, int]] = []
+    position = 0
+    while True:
+        start = s.find("{", position)
+        if start < 0:
+            return objects
         try:
-            value, end = decoder.raw_decode(s[i:])
+            value, length = decoder.raw_decode(s[start:])
         except json.JSONDecodeError:
+            position = start + 1
             continue
+        end = start + length
         if isinstance(value, dict):
-            objects.append(s[i : i + end])
-    return objects
+            objects.append((value, start, end))
+        position = end
+
+
+def extract_json_object_strings(s: str) -> List[str]:
+    """Return complete top-level JSON object substrings in model output."""
+    return [s[start:end] for _value, start, end in _json_objects_with_spans(s)]
 
 
 def extract_first_json_object(s: str) -> Optional[str]:
@@ -262,48 +271,51 @@ def _empty_entities() -> Dict[str, str]:
     return {k: "" for k in OUTPUT_FIELDS}
 
 
-def _output_field_hit_count(obj: Dict[str, Any]) -> int:
-    flat_hits = sum(1 for key in OUTPUT_FIELDS if key in obj)
-    ent = obj.get("entities", {})
-    if not isinstance(ent, dict):
-        return flat_hits
-    nested = ent.get("entities", ent)
-    if not isinstance(nested, dict):
-        return flat_hits
-    return max(flat_hits, sum(1 for key in OUTPUT_FIELDS if key in nested))
+def _expected_schema_mapping(obj: Dict[str, Any]) -> Dict[str, str] | None:
+    candidates: list[object] = [obj]
+    entities = obj.get("entities")
+    if isinstance(entities, dict):
+        nested = entities.get("entities", entities)
+        candidates.append(nested)
+
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        if not all(field in candidate for field in OUTPUT_FIELDS):
+            continue
+        if not all(isinstance(candidate[field], str) for field in OUTPUT_FIELDS):
+            continue
+        return {field: candidate[field] for field in OUTPUT_FIELDS}
+    return None
+
+
+def _parse_entities_from_raw_output(
+    raw: str,
+) -> tuple[Dict[str, str], bool]:
+    """Return the final complete entity schema and whether parsing succeeded.
+
+    Qwen3 may emit reasoning before the final answer. Accept only a complete
+    string-valued schema with no unexpected trailing answer text, so an echoed
+    empty schema followed by malformed output cannot be mistaken for success.
+    """
+    parsed: tuple[Dict[str, str], int] | None = None
+    for obj, _start, end in _json_objects_with_spans(raw):
+        mapping = _expected_schema_mapping(obj)
+        if mapping is not None:
+            parsed = mapping, end
+
+    if parsed is None:
+        return _empty_entities(), False
+
+    entities, end = parsed
+    trailing = raw[end:].strip()
+    if trailing not in {"", "```"}:
+        return _empty_entities(), False
+    return normalize_output(entities), True
 
 
 def _entities_from_raw_output(raw: str) -> Dict[str, str]:
-    """Parse the best JSON entity object from a raw model response.
-
-    Qwen3 may emit reasoning before the final answer. That reasoning can contain
-    the empty schema from the prompt, so using the first JSON object can silently
-    discard a valid final JSON answer. Prefer the valid object with the most
-    populated extraction fields, using the later object as a tie-breaker.
-    """
-    best_score = (-1, -1, -1)
-    best_entities: Optional[Dict[str, str]] = None
-
-    for index, json_str in enumerate(extract_json_object_strings(raw)):
-        try:
-            obj = json.loads(json_str)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(obj, dict):
-            continue
-
-        entities = normalize_output(obj)
-        populated = sum(1 for key in OUTPUT_FIELDS if entities.get(key))
-        field_hits = _output_field_hit_count(obj)
-        if populated == 0 and field_hits == 0:
-            continue
-
-        score = (populated, field_hits, index)
-        if score >= best_score:
-            best_score = score
-            best_entities = entities
-
-    return best_entities if best_entities is not None else _empty_entities()
+    return _parse_entities_from_raw_output(raw)[0]
 
 
 def _has_extracted_entities(entities: Dict[str, str]) -> bool:
@@ -444,7 +456,10 @@ def _run_vllm(
 
 
 def _run_transformers(
-    records: List[Dict], model_name: str, max_new_tokens: int
+    records: List[Dict],
+    model_name: str,
+    device: str,
+    max_new_tokens: int,
 ) -> List[str]:
     from transformers import AutoTokenizer, pipeline
 
@@ -453,6 +468,7 @@ def _run_transformers(
         "text-generation",
         model=model_name,
         tokenizer=tokenizer,
+        device=device,
         trust_remote_code=True,
     )
     results = []
@@ -550,7 +566,12 @@ def extract_metadata(
             max_new_tokens,
         )
     else:
-        raw_outputs = _run_transformers(inference_records, model_name, max_new_tokens)
+        raw_outputs = _run_transformers(
+            inference_records,
+            model_name,
+            device_name,
+            max_new_tokens,
+        )
     dt = time.time() - t0
 
     if len(raw_outputs) != len(original_records):
@@ -560,29 +581,35 @@ def extract_metadata(
         )
 
     target_file = descriptions_file if output_file is None else output_file
-    n_ok = 0
+    parsed_count = 0
+    populated_count = 0
     with open(target_file, "w", encoding="utf-8") as f_out:
-        for orig, rec, raw in zip(original_records, inference_records, raw_outputs):
-            entities = _entities_from_raw_output(raw)
+        for orig, _rec, raw in zip(original_records, inference_records, raw_outputs):
+            entities, parsed = _parse_entities_from_raw_output(raw)
 
             out_rec = dict(orig)
+            out_rec[EXTRACTION_PARSED_FIELD] = parsed
             for key in OUTPUT_FIELDS:
                 val = entities.get(key, "")
                 out_rec[key] = val if isinstance(val, str) else ""
             f_out.write(json.dumps(out_rec, ensure_ascii=False) + "\n")
+            if parsed:
+                parsed_count += 1
             if _has_extracted_entities(entities):
-                n_ok += 1
+                populated_count += 1
 
     speed = len(inference_records) / dt if dt > 0 else 0.0
     logger.info("=== Extraction done ===")
     logger.info(f"Processed:           {len(inference_records)}")
-    logger.info(f"Successful entities: {n_ok}")
+    logger.info(f"Parsed records:      {parsed_count}")
+    logger.info(f"Populated records:   {populated_count}")
+    logger.info(f"Retryable records:   {len(inference_records) - parsed_count}")
     logger.info(f"Time:                {dt:.2f}s  ({speed:.2f} texts/s)")
     if target_file != descriptions_file:
         logger.info(f"Output saved to:     {target_file}")
-    if inference_records and n_ok == 0:
+    if inference_records and parsed_count == 0:
         raise RuntimeError(
-            "Extraction produced no populated entities; aborting before "
+            "Extraction produced no parseable entity records; aborting before "
             "downstream normalization/DB writes. Check model output format "
             "and prompt/model compatibility."
         )

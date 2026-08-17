@@ -1,7 +1,8 @@
-"""
-Final step of the normalization pipeline: writes normalized fields from
-descriptions_file back to auction_artwork, marking every record (including
-those with no extractable metadata) as processed.
+"""Persist successfully parsed metadata-normalization records.
+
+Records with malformed or unparseable LLM output remain extraction-pending so
+a later pipeline cycle retries them. Valid parsed records with an empty entity
+schema are marked processed because they have no extractable metadata.
 """
 
 import json
@@ -9,6 +10,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from matching_pipeline.metadata_extraction.status import EXTRACTION_PARSED_FIELD
 from matching_pipeline.shared.db import connect as db_connect
 
 logger = logging.getLogger(__name__)
@@ -102,22 +104,44 @@ def _has_metadata_payload(rec: dict[str, Any]) -> bool:
     return any(_s(rec.get(field)) is not None for field in _METADATA_PAYLOAD_FIELDS)
 
 
+def _record_was_parsed(rec: dict[str, Any]) -> bool:
+    if EXTRACTION_PARSED_FIELD in rec:
+        return rec.get(EXTRACTION_PARSED_FIELD) is True
+    return _has_metadata_payload(rec)
+
+
 def write_descriptions(descriptions_file: Path) -> None:
     records = []
+    malformed_line_count = 0
     with open(descriptions_file, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
-                records.append(json.loads(line))
+                record = json.loads(line)
             except json.JSONDecodeError:
+                malformed_line_count += 1
                 continue
+            if not isinstance(record, dict):
+                malformed_line_count += 1
+                continue
+            records.append(record)
 
     logger.info(f"Loaded {len(records)} records from {descriptions_file}")
 
-    records_with_payload = [rec for rec in records if _has_metadata_payload(rec)]
-    records_without_payload = [rec for rec in records if not _has_metadata_payload(rec)]
+    parsed_records = [
+        rec
+        for rec in records
+        if _s(rec.get("id")) is not None and _record_was_parsed(rec)
+    ]
+    records_with_payload = [
+        rec for rec in parsed_records if _has_metadata_payload(rec)
+    ]
+    records_without_payload = [
+        rec for rec in parsed_records if not _has_metadata_payload(rec)
+    ]
+    retry_count = len(records) - len(parsed_records) + malformed_line_count
 
     rows = [
         (
@@ -163,6 +187,11 @@ def write_descriptions(descriptions_file: Path) -> None:
     logger.info(f"Written: {len(rows)} rows with extracted metadata")
     if empty_ids:
         logger.info(f"Marked:  {len(empty_ids)} rows as processed (no extractable entities)")
+    if retry_count:
+        logger.warning(
+            "Left %d metadata extraction records pending for retry",
+            retry_count,
+        )
 
 
 if __name__ == "__main__":

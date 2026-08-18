@@ -17,7 +17,7 @@ class PipelineDeploymentTests(unittest.TestCase):
         services = compose["services"]
         self.assertEqual(
             set(services),
-            {"db", "scrapers", "matching_pipeline", "frontend"},
+            {"db", "scrapers", "matching_pipeline", "telemetry", "frontend"},
         )
         service = services["matching_pipeline"]
         self.assertEqual(service["build"]["dockerfile"], "matching_pipeline/Dockerfile")
@@ -35,10 +35,29 @@ class PipelineDeploymentTests(unittest.TestCase):
         self.assertEqual(database["image"], "postgres:16.15")
         self.assertNotIn("ports", database)
 
+    def test_telemetry_uses_its_dedicated_image(self) -> None:
+        compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text())
+        telemetry = compose["services"]["telemetry"]
+        self.assertEqual(telemetry["build"]["dockerfile"], "telemetry/Dockerfile")
+        self.assertEqual(
+            telemetry["command"],
+            ["python", "-m", "telemetry.telemetry", "--daemon"],
+        )
+        self.assertNotIn("gpus", telemetry)
+        self.assertNotIn("profiles", telemetry)
+        self.assertEqual(telemetry["restart"], "unless-stopped")
+        self.assertEqual(telemetry["stop_grace_period"], "20s")
+        self.assertNotIn("SMARTMATCH_PROJECT_DIR", telemetry["environment"])
+        self.assertFalse(any(".git" in volume for volume in telemetry["volumes"]))
+
+        development_env = (_ROOT / ".env.docker").read_text().splitlines()
+        self.assertIn("TELEMETRY_ENABLED=false", development_env)
+
     def test_work_daemons_have_work_aware_healthchecks(self) -> None:
         compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text())
         expected_files = {
             "matching_pipeline": "/tmp/smartmatch-matching-health.json",
+            "telemetry": "/tmp/smartmatch-telemetry-health.json",
         }
         for service_name, health_file in expected_files.items():
             service = compose["services"][service_name]
@@ -94,6 +113,9 @@ class PipelineDeploymentTests(unittest.TestCase):
             "matching_pipeline": (
                 "COPY matching_pipeline/requirements.txt /tmp/requirements.txt"
             ),
+            "telemetry": (
+                "COPY telemetry/requirements.txt /tmp/telemetry-requirements.txt"
+            ),
         }
         for component, copy_instruction in dockerfile_copies.items():
             dockerfile = (_ROOT / component / "Dockerfile").read_text()
@@ -147,7 +169,25 @@ class PipelineDeploymentTests(unittest.TestCase):
         self.assertIn("python:3.12.7-slim@sha256:", first_line)
         self.assertIn(f"LightGlue@{_LIGHTGLUE_COMMIT}", dockerfile)
         self.assertIn("--no-deps", dockerfile)
+        self.assertNotIn("COPY telemetry /app/telemetry", dockerfile)
         self.assertIn("run_pipeline_scheduler.py", dockerfile)
+
+    def test_telemetry_image_installs_only_its_minimal_requirements(self) -> None:
+        dockerfile = (_ROOT / "telemetry" / "Dockerfile").read_text()
+        telemetry_requirements = _requirement_lines(
+            _ROOT / "telemetry" / "requirements.txt"
+        )
+
+        self.assertEqual(telemetry_requirements, ["psycopg[binary]==3.2.2"])
+        self.assertIn("-r /tmp/telemetry-requirements.txt", dockerfile)
+        self.assertIn("COPY requirements.txt /app/requirements.txt", dockerfile)
+        self.assertIn("COPY matching_pipeline /app/matching_pipeline", dockerfile)
+        self.assertIn("FROM application AS provenance", dockerfile)
+        self.assertIn("python -m telemetry.build_provenance", dockerfile)
+        self.assertIn("COPY --from=provenance", dockerfile)
+        self.assertNotIn("apt-get install", dockerfile)
+        self.assertNotIn("-r /app/requirements.txt", dockerfile)
+        self.assertNotIn("-r /app/matching_pipeline/requirements.txt", dockerfile)
 
     def test_combined_requirements_are_pinned_without_opencv_conflict(self) -> None:
         for filename in ("requirements.in", "requirements.txt"):

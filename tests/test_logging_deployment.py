@@ -8,7 +8,7 @@ from pathlib import Path
 import yaml
 
 _ROOT = Path(__file__).resolve().parents[1]
-_PYTHON_SERVICES = ("scrapers", "matching_pipeline", "frontend")
+_PYTHON_SERVICES = ("scrapers", "matching_pipeline", "telemetry", "frontend")
 
 
 class LoggingDeploymentTests(unittest.TestCase):
@@ -42,6 +42,14 @@ class LoggingDeploymentTests(unittest.TestCase):
             self.assertIn("PYTHONPATH=/app", dockerfile, dockerfile_path)
             self.assertIn("COPY shared /app/shared", dockerfile, dockerfile_path)
             self.assertIn("/app/logs", dockerfile, dockerfile_path)
+
+    def test_telemetry_entrypoint_uses_shared_logging_adapter(self) -> None:
+        cli = (_ROOT / "telemetry" / "cli.py").read_text()
+        self.assertIn(
+            "from shared.logging_adapter import configure_logging",
+            cli,
+        )
+        self.assertIn("configure_logging()", cli)
 
     def test_docker_environment_exposes_only_unified_log_controls(self) -> None:
         environment = (_ROOT / ".env.docker").read_text()

@@ -59,14 +59,46 @@ services:
     gpus: all
     environment:
       SMARTMATCH_CONTAINER_NAME: matching_pipeline
+      SMARTMATCH_PROJECT_DIR: /project
       SMARTMATCH_HEALTH_FILE: /tmp/smartmatch-matching-health.json
     volumes:
+      - ./.git:/project/.git:ro
       - ./db/images:/app/db/images
       - ./cache/matching_pipeline:/app/cache
       - ./cache/matching_pipeline/models:/root/.cache
       - ./logs:/app/logs
     healthcheck:
       test: ["CMD", "python", "-m", "shared.service_health", "--file", "/tmp/smartmatch-matching-health.json", "--max-age-seconds", "180"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "200m"
+        max-file: "3"
+
+  telemetry:
+    build:
+      context: .
+      dockerfile: telemetry/Dockerfile
+    command: ["python", "-m", "telemetry.telemetry", "--daemon"]
+    restart: unless-stopped
+    stop_grace_period: 20s
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ${SMARTMATCH_ENV_FILE:-./.env.docker}
+    environment:
+      SMARTMATCH_CONTAINER_NAME: telemetry
+      SMARTMATCH_HEALTH_FILE: /tmp/smartmatch-telemetry-health.json
+    volumes:
+      - ./db/images:/app/db/images:ro
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-m", "shared.service_health", "--file", "/tmp/smartmatch-telemetry-health.json", "--max-age-seconds", "180"]
       interval: 30s
       timeout: 10s
       retries: 3

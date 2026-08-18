@@ -50,8 +50,8 @@ class ServiceHealthTests(unittest.TestCase):
     def test_disabled_is_healthy_but_stale_status_is_not(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "health.json"
-            reporter = HealthReporter("worker", path)
-            reporter.update("disabled", "service is intentionally disabled")
+            reporter = HealthReporter("telemetry", path)
+            reporter.update("disabled", "telemetry is intentionally disabled")
             document = json.loads(path.read_text())
 
             healthy, _message, _document = read_health_status(
@@ -111,7 +111,7 @@ class ServiceHealthTests(unittest.TestCase):
                 json.dumps(
                     {
                         "schema_version": 1,
-                        "service": "worker",
+                        "service": "telemetry",
                         "state": "healthy",
                         "detail": "successful work",
                         "updated_at": "1970-01-01T00:08:20Z",
@@ -127,7 +127,7 @@ class ServiceHealthTests(unittest.TestCase):
                 json.dumps(
                     {
                         "schema_version": True,
-                        "service": "worker",
+                        "service": "telemetry",
                         "state": "healthy",
                         "detail": "bad schema",
                         "updated_at": "1970-01-01T00:08:20Z",

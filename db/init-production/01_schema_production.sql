@@ -371,6 +371,29 @@ CREATE TABLE IF NOT EXISTS scraper_run (
     error_message      text
 );
 
+CREATE TABLE IF NOT EXISTS telemetry_daily_attempt (
+    attempt_date    date PRIMARY KEY,
+    attempted_at    timestamptz NOT NULL DEFAULT now(),
+    completed_at    timestamptz,
+    status          varchar(20) NOT NULL,
+    payload_sha256  char(64),
+    payload_bytes   bigint,
+    sync_id         uuid,
+    page_count      integer,
+    pages_sent      integer,
+    http_status     smallint,
+    error_class     varchar(255),
+    CONSTRAINT telemetry_daily_attempt_status_check
+        CHECK (status IN ('started', 'sent', 'failed')),
+    CONSTRAINT telemetry_daily_attempt_payload_bytes_check
+        CHECK (payload_bytes IS NULL OR payload_bytes >= 0),
+    CONSTRAINT telemetry_daily_attempt_page_count_check
+        CHECK (page_count IS NULL OR page_count > 0),
+    CONSTRAINT telemetry_daily_attempt_pages_sent_check
+        CHECK (pages_sent IS NULL OR pages_sent >= 0),
+    CONSTRAINT telemetry_daily_attempt_http_status_check
+        CHECK (http_status IS NULL OR http_status BETWEEN 100 AND 599)
+);
 
 CREATE TABLE IF NOT EXISTS match_score (
     lost_id          uuid NOT NULL REFERENCES lost_artwork(lost_artwork_id) ON DELETE CASCADE,

@@ -718,3 +718,21 @@ class TechniqueVariant(Base):
     dict_technique_name_obj: Mapped[Optional["DictTechnique"]] = relationship(
         "DictTechnique", foreign_keys=[dict_technique_name]
     )
+
+
+class TelemetryDailyAttempt(Base):
+    __tablename__ = "telemetry_daily_attempt"
+
+    attempt_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    attempted_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, default=datetime.utcnow
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True))
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    payload_sha256: Mapped[Optional[str]] = mapped_column(Text)
+    payload_bytes: Mapped[Optional[int]] = mapped_column(BigInteger)
+    sync_id: Mapped[Optional[UUID]] = mapped_column(UUID(as_uuid=True))
+    page_count: Mapped[Optional[int]] = mapped_column(Integer)
+    pages_sent: Mapped[Optional[int]] = mapped_column(Integer)
+    http_status: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    error_class: Mapped[Optional[str]] = mapped_column(String(255))

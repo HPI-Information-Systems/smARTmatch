@@ -32,14 +32,17 @@ from .embedding_cache import (
     load_dino_adapter_class,
     source_identity_sha256,
 )
+from .image_loading import ImageDecodeError, load_rgb_image
 from .input_sources import (
     ImageFileRow,
     has_unprocessed_auction_image_file_rows,
     load_db_image_file_rows,
     read_image_file_csv,
+    read_lost_image_content_revision,
     reset_auction_image_matching_for_replay,
     write_image_file_csv,
 )
+from .progress import ImageProgress
 
 logger = logging.getLogger(__name__)
 
@@ -152,8 +155,7 @@ def run_image_blocking(
         logger.info(
             "No unprocessed auction image files found in DB; skipped input loading, lost embedding cache preparation, and candidate generation"
         )
-        logger.info("Image blocking finished in %.1fs", perf_counter() - run_started_at)
-        return BlockingRunResult(
+        result = BlockingRunResult(
             blocking_root(),
             0,
             0,
@@ -162,6 +164,10 @@ def run_image_blocking(
             0,
             0,
         )
+        return _log_blocking_finished(result, run_started_at)
+    lost_content_revision = (
+        None if input_csv is not None else read_lost_image_content_revision()
+    )
     load_started_at = perf_counter()
     lost_rows, auction_rows = _load_inputs(
         input_csv,
@@ -175,9 +181,6 @@ def run_image_blocking(
         len(lost_rows),
         len(auction_rows),
     )
-    _log_sample_rows("lost", lost_rows)
-    _log_sample_rows("auction", auction_rows)
-
     _prepare_cache_dirs(clear_candidates)
     write_image_files_parquet(LOST_ROLE, lost_rows)
     write_image_files_parquet(AUCTION_ROLE, auction_rows)
@@ -188,8 +191,7 @@ def run_image_blocking(
         logger.info(
             "No auction image files selected for blocking; skipped lost embedding cache preparation and candidate generation"
         )
-        logger.info("Image blocking finished in %.1fs", perf_counter() - run_started_at)
-        return BlockingRunResult(
+        result = BlockingRunResult(
             blocking_root(),
             len(lost_rows),
             0,
@@ -198,6 +200,7 @@ def run_image_blocking(
             0,
             0,
         )
+        return _log_blocking_finished(result, run_started_at)
     if not lost_rows:
         raise ValueError("No lost image files available for blocking")
 
@@ -241,6 +244,7 @@ def run_image_blocking(
         candidate_shard_auction_images,
         model_identity=_candidate_model_identity(lost_cache.metadata),
         lost_source_identity=lost_source_identity,
+        lost_content_revision=lost_content_revision,
         lost_content_versions=lost_content_versions,
         lost_content_sha256=lost_content_sha256,
     )
@@ -259,8 +263,7 @@ def run_image_blocking(
         lost_rows,
         auction_rows,
     )
-    logger.info("Image blocking finished in %.1fs", perf_counter() - run_started_at)
-    return BlockingRunResult(
+    result = BlockingRunResult(
         blocking_root(),
         len(lost_rows),
         len(auction_rows),
@@ -270,6 +273,7 @@ def run_image_blocking(
         int(lost_cache.metadata.get("generated_count", 0)),
         embedded_count,
     )
+    return _log_blocking_finished(result, run_started_at)
 
 
 def _prepare_processed_image_replay() -> None:
@@ -306,13 +310,62 @@ def _load_inputs(
 ) -> tuple[list[ImageFileRow], list[ImageFileRow]]:
     if input_csv is not None:
         logger.info("Loading blocking inputs from CSV: %s", input_csv)
-        return read_image_file_csv(input_csv)
-    logger.info("Loading blocking inputs from Postgres")
-    return load_db_image_file_rows(
-        lost_limit=lost_limit,
-        auction_limit=auction_limit,
-        include_processed_auction_images=include_processed_auction_images,
+        lost_rows, auction_rows = read_image_file_csv(input_csv)
+    else:
+        logger.info("Loading blocking inputs from Postgres")
+        lost_rows, auction_rows = load_db_image_file_rows(
+            lost_limit=lost_limit,
+            auction_limit=auction_limit,
+            include_processed_auction_images=include_processed_auction_images,
+        )
+    return (
+        _filter_decodable_rows(LOST_ROLE, lost_rows),
+        _filter_decodable_rows(AUCTION_ROLE, auction_rows),
     )
+
+
+def _filter_decodable_rows(
+    role: str,
+    rows: list[ImageFileRow],
+) -> list[ImageFileRow]:
+    if not rows:
+        return []
+    decodable: list[ImageFileRow] = []
+    skipped = 0
+    with ImageProgress(f"{role}_validation", len(rows)) as progress:
+        for completed, row in enumerate(rows, start=1):
+            try:
+                image = load_rgb_image(row.file_path)
+                image.close()
+            except ImageDecodeError as exc:
+                skipped += 1
+                logger.warning(
+                    "Skipping unreadable %s image: file_id=%s path=%s error=%s",
+                    role,
+                    row.file_id,
+                    row.file_path,
+                    exc,
+                )
+            except Exception:
+                logger.error(
+                    "Blocking input validation failed: role=%s file_id=%s path=%s",
+                    role,
+                    row.file_id,
+                    row.file_path,
+                )
+                raise
+            else:
+                decodable.append(row)
+            progress.update(completed)
+    if skipped:
+        logger.warning(
+            "Skipped %d/%d unreadable %s images; excluded rows remain "
+            "unembedded for retry",
+            skipped,
+            len(rows),
+            role,
+        )
+    return decodable
 
 
 def _effective_auction_limit(
@@ -402,6 +455,7 @@ def _write_candidates(
     *,
     model_identity: str,
     lost_source_identity: str,
+    lost_content_revision: int | None,
     lost_content_versions: dict[str, int | None],
     lost_content_sha256: dict[str, str],
 ) -> tuple[int, int, int]:
@@ -412,6 +466,7 @@ def _write_candidates(
         model.get,
         model_identity=model_identity,
         lost_source_identity=lost_source_identity,
+        lost_content_revision=lost_content_revision,
         lost_content_versions=lost_content_versions,
         lost_content_sha256=lost_content_sha256,
         top_k=top_k,
@@ -444,11 +499,27 @@ class _ModelProvider:
         return self._model
 
 
-def _log_sample_rows(role: str, rows: list[ImageFileRow], limit: int = 3) -> None:
-    for row in rows[:limit]:
-        logger.debug("%s input sample: file_id=%s path=%s", role, row.file_id, row.file_path)
-    if len(rows) > limit:
-        logger.debug("%s input sample: ... %d more rows", role, len(rows) - limit)
+def _log_blocking_finished(
+    result: BlockingRunResult,
+    started_at: float,
+) -> BlockingRunResult:
+    elapsed = max(perf_counter() - started_at, 0.0)
+    processable_images = result.lost_image_count + result.auction_image_count
+    throughput = (
+        processable_images / elapsed if processable_images and elapsed else 0.0
+    )
+    logger.info(
+        "Image blocking finished: processable_images=%d lost=%d auction=%d "
+        "generated_lost=%d candidates=%d elapsed=%.1fs throughput=%.2f images/s",
+        processable_images,
+        result.lost_image_count,
+        result.auction_image_count,
+        result.generated_lost_embedding_count,
+        result.candidate_count,
+        elapsed,
+        throughput,
+    )
+    return result
 
 
 def _prepare_cache_dirs(clear_candidates: bool) -> None:

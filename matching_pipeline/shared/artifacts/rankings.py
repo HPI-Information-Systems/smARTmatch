@@ -13,6 +13,7 @@ from .parquet_common import require_pyarrow, write_table_atomic
 
 DEFAULT_LOAD_BATCH_SIZE = 1_000
 _RANKING_ROW_BATCH_SIZE = 1_000
+_UNSET_REVISION = object()
 
 
 class LostMatchCandidate(TypedDict):
@@ -24,6 +25,8 @@ class LostMatchCandidate(TypedDict):
 class AuctionMatchCandidates(TypedDict):
     auction_file_id: str
     auction_file_path: str
+    auction_content_version: int | None
+    lost_content_revision: int | None
     match_candidates: list[LostMatchCandidate]
 
 
@@ -44,9 +47,15 @@ def write_auction_to_lost_rankings_parquet(
     lost_content_sha256: Sequence[str],
     ranks: Sequence[int],
     blocking_scores: Sequence[float],
+    lost_content_revisions: Sequence[int | None] | None = None,
 ) -> Path:
     """Write one top-k auction-to-lost ranking part under `CACHE_DIR`."""
     output_path = _ranking_part_path(part_name)
+    revision_values = (
+        list(lost_content_revisions)
+        if lost_content_revisions is not None
+        else [None] * len(auction_file_ids)
+    )
     _validate_equal_lengths(
         auction_file_ids,
         auction_content_versions,
@@ -56,6 +65,7 @@ def write_auction_to_lost_rankings_parquet(
         lost_content_sha256,
         ranks,
         blocking_scores,
+        revision_values,
     )
     coerced_auction_ids = [
         _required_text(value, "auction_file_id") for value in auction_file_ids
@@ -77,6 +87,10 @@ def write_auction_to_lost_rankings_parquet(
         _coerce_content_sha256(value, "lost_content_sha256")
         for value in lost_content_sha256
     ]
+    coerced_lost_revisions = [
+        _coerce_content_version(value, "lost_content_revision")
+        for value in revision_values
+    ]
     coerced_ranks = [_coerce_rank(value) for value in ranks]
     coerced_scores = [_coerce_score(value) for value in blocking_scores]
 
@@ -89,6 +103,7 @@ def write_auction_to_lost_rankings_parquet(
             "lost_file_id": coerced_lost_ids,
             "lost_content_version": coerced_lost_versions,
             "lost_content_sha256": coerced_lost_digests,
+            "lost_content_revision": coerced_lost_revisions,
             "rank": coerced_ranks,
             "blocking_score": coerced_scores,
         },
@@ -100,6 +115,7 @@ def write_auction_to_lost_rankings_parquet(
                 ("lost_file_id", pa.string()),
                 ("lost_content_version", pa.int64()),
                 ("lost_content_sha256", pa.string()),
+                ("lost_content_revision", pa.int64()),
                 ("rank", pa.int16()),
                 ("blocking_score", pa.float32()),
             ]
@@ -166,31 +182,74 @@ def _iter_rankings(
 ) -> Iterator[AuctionMatchCandidates]:
     _pa, pq = require_pyarrow()
     current_auction_id: str | None = None
+    current_auction_version: int | None = None
+    current_lost_revision: int | None = None
+    operation_lost_revision: object = _UNSET_REVISION
     current_candidates: list[tuple[int, str, float]] = []
     seen_auction_ids: set[str] = set()
 
-    for auction_id, lost_id, rank, blocking_score in _iter_ranking_rows(pq, paths):
+    for (
+        auction_id,
+        auction_version,
+        lost_revision,
+        lost_id,
+        rank,
+        blocking_score,
+    ) in _iter_ranking_rows(pq, paths):
+        if operation_lost_revision is _UNSET_REVISION:
+            operation_lost_revision = lost_revision
+        elif operation_lost_revision != lost_revision:
+            raise ValueError("Ranking artifacts contain inconsistent lost-content revisions")
         if auction_id != current_auction_id:
             if current_auction_id is not None:
-                yield _make_item(current_auction_id, current_candidates, auction_paths, lost_paths)
+                yield _make_item(
+                    current_auction_id,
+                    current_auction_version,
+                    current_lost_revision,
+                    current_candidates,
+                    auction_paths,
+                    lost_paths,
+                )
                 seen_auction_ids.add(current_auction_id)
             if auction_id in seen_auction_ids:
                 raise ValueError(
                     f"Ranking rows for auction_file_id are not contiguous: {auction_id}"
                 )
             current_auction_id = auction_id
+            current_auction_version = auction_version
+            current_lost_revision = lost_revision
             current_candidates = []
+        elif auction_version != current_auction_version:
+            raise ValueError(
+                f"Ranking rows disagree on auction content version: {auction_id}"
+            )
         current_candidates.append((rank, lost_id, blocking_score))
 
     if current_auction_id is not None:
-        yield _make_item(current_auction_id, current_candidates, auction_paths, lost_paths)
+        yield _make_item(
+            current_auction_id,
+            current_auction_version,
+            current_lost_revision,
+            current_candidates,
+            auction_paths,
+            lost_paths,
+        )
 
 
-def _iter_ranking_rows(pq, paths: Sequence[Path]) -> Iterator[tuple[str, str, int, float]]:
+def _iter_ranking_rows(
+    pq, paths: Sequence[Path]
+) -> Iterator[tuple[str, int | None, int | None, str, int, float]]:
     for path in paths:
         parquet_file = pq.ParquetFile(path)
-        auction_column, lost_column = _ranking_id_columns(parquet_file.schema_arrow.names, path)
+        available = parquet_file.schema_arrow.names
+        auction_column, lost_column = _ranking_id_columns(available, path)
         columns = [auction_column, lost_column, "rank", "blocking_score"]
+        optional_columns = [
+            name
+            for name in ("auction_content_version", "lost_content_revision")
+            if name in available
+        ]
+        columns.extend(optional_columns)
         for batch in parquet_file.iter_batches(
             batch_size=_RANKING_ROW_BATCH_SIZE, columns=columns
         ):
@@ -199,14 +258,38 @@ def _iter_ranking_rows(pq, paths: Sequence[Path]) -> Iterator[tuple[str, str, in
             lost_values = batch.column(names.index(lost_column)).to_pylist()
             rank_values = batch.column(names.index("rank")).to_pylist()
             blocking_values = batch.column(names.index("blocking_score")).to_pylist()
-            for auction_id, lost_id, rank, blocking_score in zip(
+            auction_versions = (
+                batch.column(names.index("auction_content_version")).to_pylist()
+                if "auction_content_version" in names
+                else [None] * batch.num_rows
+            )
+            lost_revisions = (
+                batch.column(names.index("lost_content_revision")).to_pylist()
+                if "lost_content_revision" in names
+                else [None] * batch.num_rows
+            )
+            for (
+                auction_id,
+                auction_version,
+                lost_revision,
+                lost_id,
+                rank,
+                blocking_score,
+            ) in zip(
                 auction_values,
+                auction_versions,
+                lost_revisions,
                 lost_values,
                 rank_values,
                 blocking_values,
+                strict=True,
             ):
                 yield (
                     _required_text(auction_id, auction_column),
+                    _coerce_content_version(
+                        auction_version, "auction_content_version"
+                    ),
+                    _coerce_content_version(lost_revision, "lost_content_revision"),
                     _required_text(lost_id, lost_column),
                     _coerce_rank(rank),
                     _coerce_score(blocking_score),
@@ -215,6 +298,8 @@ def _iter_ranking_rows(pq, paths: Sequence[Path]) -> Iterator[tuple[str, str, in
 
 def _make_item(
     auction_id: str,
+    auction_content_version: int | None,
+    lost_content_revision: int | None,
     candidates: Sequence[tuple[int, str, float]],
     auction_paths: dict[str, str],
     lost_paths: dict[str, str],
@@ -222,6 +307,8 @@ def _make_item(
     return {
         "auction_file_id": auction_id,
         "auction_file_path": _lookup_path(auction_paths, auction_id, "auction"),
+        "auction_content_version": auction_content_version,
+        "lost_content_revision": lost_content_revision,
         "match_candidates": [
             {
                 "lost_file_id": lost_id,

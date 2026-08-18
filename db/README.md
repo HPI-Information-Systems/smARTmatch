@@ -87,7 +87,7 @@ Baseline mode still creates a database backup. Never baseline a migration merely
 
 Migration 19 collapses duplicate `image_file.file_path` rows without transferring `is_embedded=true` across image IDs. It resets each affected canonical image and dependent auction processing state so ID-keyed embedding and candidate artifacts cannot be trusted accidentally. After applying it, run image blocking successfully before running image cleanup; blocking rewrites the lost embedding cache with canonical IDs and replaces stale candidate identities.
 
-Migration 24 adds `image_file.content_sha256` and monotonic `content_version`. Its trigger increments the version and clears `is_embedded` whenever a scraper records different bytes. The migration also clears embedding state on legacy rows whose digest is initially unknown. Apply it before deploying scraper or blocking code that reads these columns.
+Migration 24 adds `image_file.content_sha256`, monotonic `content_version`, and the lost-image corpus revision used to reject stale in-flight matching writes. Its triggers invalidate image-derived scores and replay state whenever a scraper records different bytes or changes lost-image link membership: lost-corpus changes schedule every live auction image, while auction-image changes schedule all live sibling images of linked artworks. Metadata-bearing match rows keep their metadata and review fields; image-only rows are removed. Applying the migration performs the same one-time score invalidation and replay reset for legacy rows whose digest is unknown, so expect a complete image-matching replay. Apply it before deploying scraper, blocking, or matching code that uses these identities.
 
 ## Lost-artwork institution classification
 

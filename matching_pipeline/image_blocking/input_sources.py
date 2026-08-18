@@ -97,7 +97,8 @@ def read_image_file_csv(csv_path: Path) -> tuple[list[ImageFileRow], list[ImageF
                 raise ValueError(f"Duplicate {role} file_id at {path}:{line_number}: {file_id}")
             if not file_path.is_file():
                 raise FileNotFoundError(
-                    f"Image file not found at {path}:{line_number}: {file_path}"
+                    f"Image file not found at {path}:{line_number}: "
+                    f"file_id={file_id} path={file_path}"
                 )
             seen[role].add(file_id)
             grouped[role].append(
@@ -164,6 +165,30 @@ def reset_auction_image_matching_for_replay() -> tuple[int, int]:
         raise
     finally:
         conn.close()
+
+
+def read_lost_image_content_revision() -> int:
+    """Return the revision guarding the global lost-image candidate corpus."""
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT lost_content_revision
+                FROM image_matching_input_state
+                WHERE singleton = true
+                """
+            )
+            row = cur.fetchone()
+    if row is None:
+        raise RuntimeError(
+            "Missing image_matching_input_state row; apply production migration 24"
+        )
+    revision = int(row[0])
+    if revision <= 0:
+        raise RuntimeError(
+            "image_matching_input_state.lost_content_revision must be positive"
+        )
+    return revision
 
 
 def has_unprocessed_auction_image_file_rows() -> bool:
@@ -456,7 +481,9 @@ def _db_image_file_path(
         )
     path = _resolve_db_file_path(image_root, file_path, validate_files)
     if validate_files and not path.is_file():
-        raise FileNotFoundError(f"Image file not found: {path}")
+        raise FileNotFoundError(
+            f"Image file not found: image_file_id={image_file_id} path={path}"
+        )
     return path
 
 

@@ -66,6 +66,8 @@ class RunImageMatchingTests(unittest.TestCase):
                 {
                     "auction_file_id": "auction-1",
                     "auction_file_path": str(auction_path),
+                    "auction_content_version": 2,
+                    "lost_content_revision": 7,
                     "match_candidates": [
                         {
                             "lost_file_id": "lost-1",
@@ -88,6 +90,8 @@ class RunImageMatchingTests(unittest.TestCase):
                 result = runner.run_image_matching(results_csv=results_csv, feats_dir=None)
 
             self.assertEqual(result.processed_auction_file_ids, ["auction-1"])
+            self.assertEqual(result.lost_content_revision, 7)
+            self.assertEqual(result.auction_content_versions, {"auction-1": 2})
             self.assertEqual(len(result.accepted_matches), 1)
             self.assertEqual(result.pairs_processed, 1)
             with results_csv.open(newline="", encoding="utf-8") as handle:

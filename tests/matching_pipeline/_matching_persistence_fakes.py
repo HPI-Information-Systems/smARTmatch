@@ -11,16 +11,21 @@ class Cursor:
         *,
         auction_rows=(),
         lost_rows=(),
+        content_version_rows=(),
+        lost_revision_row=(1,),
         finalized_row=(0, 0, 0),
         fail_text: str | None = None,
     ) -> None:
         self.auction_rows = list(auction_rows)
         self.lost_rows = list(lost_rows)
+        self.content_version_rows = list(content_version_rows)
+        self.lost_revision_row = lost_revision_row
         self.finalized_row = finalized_row
         self.fail_text = fail_text
         self.execute_calls: list[tuple[str, object]] = []
         self.executemany_calls: list[tuple[str, list[tuple[object, ...]]]] = []
-        self._fetchall_rows: list[tuple[object, object]] = []
+        self._fetchall_rows: list[tuple[object, ...]] = []
+        self._fetchone_row = finalized_row
         self.entered = False
         self.exited = False
 
@@ -36,10 +41,16 @@ class Cursor:
         self.execute_calls.append((sql, params))
         if self.fail_text is not None and self.fail_text in sql:
             raise RuntimeError("synthetic cursor failure")
-        if "SELECT image_file_id, auction_artwork_id" in sql:
+        if "SELECT image_file_id, content_version" in sql:
+            self._fetchall_rows = self.content_version_rows
+        elif "SELECT lost_content_revision" in sql:
+            self._fetchone_row = self.lost_revision_row
+        elif "SELECT image_file_id, auction_artwork_id" in sql:
             self._fetchall_rows = self.auction_rows
         elif "SELECT image_file_id, lost_artwork_id" in sql:
             self._fetchall_rows = self.lost_rows
+        elif "WITH input_ids" in sql:
+            self._fetchone_row = self.finalized_row
 
     def executemany(self, sql, rows):
         materialized_rows = list(rows)
@@ -49,7 +60,7 @@ class Cursor:
         return list(self._fetchall_rows)
 
     def fetchone(self):
-        return self.finalized_row
+        return self._fetchone_row
 
 
 class Connection:

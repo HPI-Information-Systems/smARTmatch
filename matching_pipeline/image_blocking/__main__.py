@@ -6,9 +6,7 @@ import argparse
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
-from matching_pipeline.shared.artifacts import load_auction_to_lost_rankings_with_paths
 from shared.logging_adapter import configure_logging
 
 from .config import (
@@ -72,6 +70,7 @@ def parse_blocking_args_and_run_blocking_with_result(
     *, full_pipeline: bool = False
 ) -> BlockingCliResult:
     configure_logging()
+    logging.getLogger("PIL").setLevel(logging.WARNING)
     parser = build_parser()
     args = parser.parse_args()
     if full_pipeline:
@@ -104,56 +103,18 @@ def parse_blocking_args_and_run_blocking_with_result(
 
 
 def _print_blocking_result(result: BlockingRunResult) -> None:
-    logger.info("Blocking cache: %s", result.cache_dir)
-    logger.info("Lost images: %d", result.lost_image_count)
-    logger.info("Auction images: %d", result.auction_image_count)
     logger.info(
-        "Generated lost embeddings: %d", result.generated_lost_embedding_count
-    )
-    logger.info("Embedded image files marked: %d", result.embedded_image_file_count)
-    logger.info("Candidate parts skipped: %d", result.skipped_candidate_part_count)
-    logger.info(
-        "Candidates: %d rows in %d parts",
+        "Blocking result: cache=%s lost=%d auction=%d generated_lost=%d "
+        "embedded=%d candidates=%d parts=%d skipped_parts=%d",
+        result.cache_dir,
+        result.lost_image_count,
+        result.auction_image_count,
+        result.generated_lost_embedding_count,
+        result.embedded_image_file_count,
         result.candidate_count,
         result.candidate_part_count,
+        result.skipped_candidate_part_count,
     )
-    _print_ranking_preview()
-
-
-def _print_ranking_preview(limit: int = 10) -> None:
-    rows = _ranking_preview_rows(limit)
-    if not rows:
-        logger.info("Ranking preview: no candidate rankings found.")
-        return
-    logger.info("First candidate rankings:")
-    _print_table(("#", "auction_file_id", "rank", "lost_file_id"), rows)
-
-
-def _ranking_preview_rows(limit: int) -> list[tuple[str, ...]]:
-    rows: list[tuple[str, ...]] = []
-    for item in load_auction_to_lost_rankings_with_paths():
-        for rank, candidate in enumerate(item["match_candidates"], start=1):
-            rows.append(
-                (
-                    str(len(rows) + 1),
-                    item["auction_file_id"],
-                    str(rank),
-                    candidate["lost_file_id"],
-                )
-            )
-            if len(rows) >= limit:
-                return rows
-    return rows
-
-
-def _print_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> None:
-    widths = [len(header) for header in headers]
-    for row in rows:
-        widths = [max(width, len(value)) for width, value in zip(widths, row)]
-    logger.info(" | ".join(value.ljust(width) for value, width in zip(headers, widths)))
-    logger.info("-+-".join("-" * width for width in widths))
-    for row in rows:
-        logger.info(" | ".join(value.ljust(width) for value, width in zip(row, widths)))
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import sys
 import tempfile
 import types
@@ -12,7 +13,7 @@ from unittest import mock
 import numpy as np
 import torch
 
-from matching_pipeline.image_blocking import dino_adapter
+from matching_pipeline.image_blocking import dino_adapter, image_loading
 from tests.matching_pipeline._blocking_dino_db_test_support import bare_adapter
 
 
@@ -156,6 +157,29 @@ class DinoAdapterBehaviorTests(unittest.TestCase):
         self.assertEqual(opened_image.mode, "RGB")
         self.assertEqual(opened_image.size, (8, 6))
         np.testing.assert_array_equal(result, [1.0, 2.0])
+
+    def test_shared_loader_rejects_extensionless_non_image(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "not-an-image"
+            image_path.write_bytes(b"<html>not an image</html>")
+
+            with self.assertRaisesRegex(
+                image_loading.ImageDecodeError,
+                "Cannot decode supported image file",
+            ):
+                image_loading.load_rgb_image(image_path)
+
+        with self.assertRaises(FileNotFoundError):
+            image_loading.load_rgb_image(Path(directory) / "missing")
+
+        with mock.patch.object(
+            image_loading.Image,
+            "open",
+            side_effect=OSError(errno.EIO, "I/O failure"),
+        ):
+            with self.assertRaises(OSError) as raised:
+                image_loading.load_rgb_image("unavailable")
+        self.assertEqual(raised.exception.errno, errno.EIO)
 
     def test_generate_batch_paths_and_model_inference(self) -> None:
         opened = [mock.Mock(), mock.Mock()]

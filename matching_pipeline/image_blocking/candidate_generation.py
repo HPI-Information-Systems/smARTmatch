@@ -6,7 +6,6 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from time import perf_counter
 from typing import Callable, Mapping, Sequence
 
 import numpy as np
@@ -15,11 +14,12 @@ from matching_pipeline.shared.artifacts import write_auction_to_lost_rankings_pa
 from matching_pipeline.shared.env import env_auction_to_lost_rankings_dir
 
 from .input_sources import ImageFileRow
+from .progress import ImageProgress
 from .search import topk_cosine_similarity
 
 logger = logging.getLogger(__name__)
 
-CANDIDATE_IDENTITY_SCHEMA_VERSION = 2
+CANDIDATE_IDENTITY_SCHEMA_VERSION = 3
 _FINGERPRINT_CHUNK_SIZE = 1024 * 1024
 
 
@@ -51,6 +51,7 @@ def write_candidate_parts(
     image_batch_size: int,
     shard_size: int,
     force_rebuild_file_ids: set[str] | None = None,
+    lost_content_revision: int | None = None,
 ) -> tuple[int, int, int]:
     output_dir = env_auction_to_lost_rankings_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -73,13 +74,17 @@ def write_candidate_parts(
             lost_file_ids,
             lost_content_sha256,
         )
+        normalized_lost_revision = _optional_content_revision(
+            lost_content_revision,
+            "lost_content_revision",
+        )
         lost_embedding_identity = _embedding_identity(
             lost_file_ids,
             lost_embeddings,
             lost_source_identity=normalized_lost_source_identity,
             lost_content_versions=normalized_lost_versions,
         )
-        auction_image_identities = [_image_identity(row) for row in auction_rows]
+        auction_image_identities = _image_identities(auction_rows)
     except Exception:
         clear_candidate_parts(output_dir)
         raise
@@ -96,58 +101,58 @@ def write_candidate_parts(
         output_dir,
     )
 
-    for part_index in range(part_count):
-        shard_start = part_index * shard_size
-        shard_end = (part_index + 1) * shard_size
-        shard = auction_rows[shard_start:shard_end]
-        part_path = _part_path(
-            output_dir,
-            part_index,
-            auction_image_identities[shard_start:shard_end],
-            lost_embedding_identity,
-            normalized_model_identity,
-            top_k,
-        )
-        _remove_stale_parts(output_dir, part_index, keep=part_path)
-        force_rebuild = any(row.file_id in forced_ids for row in shard)
-        if force_rebuild and part_path.is_file():
-            part_path.unlink()
-            logger.info(
-                "Removed candidate part with DB-invalidated image IDs: %s",
-                part_path,
+    completed = 0
+    with ImageProgress("auction_candidates", len(auction_rows)) as progress:
+        for part_index in range(part_count):
+            shard_start = part_index * shard_size
+            shard_end = (part_index + 1) * shard_size
+            shard = auction_rows[shard_start:shard_end]
+            part_path = _part_path(
+                output_dir,
+                part_index,
+                auction_image_identities[shard_start:shard_end],
+                lost_embedding_identity,
+                normalized_model_identity,
+                top_k,
+                lost_content_revision=normalized_lost_revision,
             )
-        total += len(shard) * min(top_k, len(lost_file_ids))
-        logger.info(
-            "Candidate part %d/%d planned: auction_images=%d path=%s",
-            part_index + 1,
-            part_count,
-            len(shard),
-            part_path,
-        )
-        if part_path.is_file():
-            skipped += 1
-            logger.info("Candidate part %d/%d already exists; skipping", part_index + 1, part_count)
-            continue
-        _write_part(
-            part_path,
-            shard,
-            lost_file_ids,
-            lost_embeddings,
-            model_factory(),
-            top_k,
-            image_batch_size,
-            part_index + 1,
-            part_count,
-            auction_image_identities[shard_start:shard_end],
-            normalized_lost_versions,
-            normalized_lost_digests,
-        )
+            _remove_stale_parts(output_dir, part_index, keep=part_path)
+            force_rebuild = any(row.file_id in forced_ids for row in shard)
+            if force_rebuild and part_path.is_file():
+                part_path.unlink()
+                logger.debug(
+                    "Removed candidate part with DB-invalidated image IDs: %s",
+                    part_path,
+                )
+            total += len(shard) * min(top_k, len(lost_file_ids))
+            if part_path.is_file():
+                skipped += 1
+                completed += len(shard)
+                progress.update(completed)
+                continue
+            _write_part(
+                part_path,
+                shard,
+                lost_file_ids,
+                lost_embeddings,
+                model_factory(),
+                top_k,
+                image_batch_size,
+                auction_image_identities[shard_start:shard_end],
+                normalized_lost_versions,
+                normalized_lost_digests,
+                normalized_lost_revision,
+                progress,
+                completed,
+            )
+            completed += len(shard)
+            progress.update(completed)
 
-    current_image_identities = [_image_identity(row) for row in auction_rows]
-    if current_image_identities != auction_image_identities:
-        clear_candidate_parts(output_dir)
-        raise RuntimeError("Auction images changed during candidate generation")
-    _remove_parts_from_index(output_dir, part_count)
+        current_image_identities = _image_identities(auction_rows)
+        if current_image_identities != auction_image_identities:
+            clear_candidate_parts(output_dir)
+            raise RuntimeError("Auction images changed during candidate generation")
+        _remove_parts_from_index(output_dir, part_count)
     return total, part_count, skipped
 
 
@@ -159,41 +164,48 @@ def _write_part(
     model,
     top_k,
     batch_size,
-    part_number,
-    part_count,
     expected_image_identities,
     lost_content_versions,
     lost_content_sha256,
+    lost_content_revision,
+    progress,
+    completed_before,
 ) -> None:
-    part_started_at = perf_counter()
     columns = _empty_candidate_columns()
     for batch_start in range(0, len(shard), batch_size):
         batch = shard[batch_start : batch_start + batch_size]
         paths = [str(row.file_path) for row in batch]
-        embeddings = np.asarray(model.generate_embeddings_batch(paths), dtype=np.float32)
-        indices, scores = topk_cosine_similarity(embeddings, lost_embeddings, top_k=top_k)
-        _append_candidates(
-            columns,
-            batch,
-            lost_file_ids,
-            indices,
-            scores,
-            expected_image_identities[batch_start : batch_start + len(batch)],
-            lost_content_versions,
-            lost_content_sha256,
-        )
-    if [_image_identity(row) for row in shard] != list(expected_image_identities):
+        try:
+            embeddings = np.asarray(
+                model.generate_embeddings_batch(paths), dtype=np.float32
+            )
+            indices, scores = topk_cosine_similarity(
+                embeddings, lost_embeddings, top_k=top_k
+            )
+            _append_candidates(
+                columns,
+                batch,
+                lost_file_ids,
+                indices,
+                scores,
+                expected_image_identities[batch_start : batch_start + len(batch)],
+                lost_content_versions,
+                lost_content_sha256,
+                lost_content_revision,
+            )
+        except Exception:
+            for row in batch:
+                logger.error(
+                    "Auction image candidate generation failed: file_id=%s path=%s",
+                    row.file_id,
+                    row.file_path,
+                )
+            raise
+        progress.update(completed_before + batch_start + len(batch))
+    if _image_identities(shard) != list(expected_image_identities):
         clear_candidate_parts(part_path.parent)
         raise RuntimeError("Auction images changed during candidate generation")
     write_auction_to_lost_rankings_parquet(part_path.name, **columns)
-    logger.info(
-        "Candidate part %d/%d written in %.1fs: rows=%d path=%s",
-        part_number,
-        part_count,
-        perf_counter() - part_started_at,
-        len(columns["auction_file_ids"]),
-        part_path,
-    )
 
 
 def _append_candidates(
@@ -205,6 +217,7 @@ def _append_candidates(
     auction_image_identities,
     lost_content_versions,
     lost_content_sha256,
+    lost_content_revision,
 ) -> None:
     for row_idx, row in enumerate(batch):
         auction_identity = auction_image_identities[row_idx]
@@ -222,6 +235,7 @@ def _append_candidates(
             columns["lost_content_sha256"].append(
                 lost_content_sha256[lost_index]
             )
+            columns["lost_content_revisions"].append(lost_content_revision)
             columns["ranks"].append(rank)
             columns["blocking_scores"].append(float(scores[row_idx, rank - 1]))
 
@@ -231,6 +245,15 @@ def _required_identity(value: object, name: str) -> str:
     if not identity:
         raise ValueError(f"{name} must not be empty")
     return identity
+
+
+def _optional_content_revision(value: object, name: str) -> int | None:
+    if value is None:
+        return None
+    revision = int(value)
+    if revision <= 0:
+        raise ValueError(f"{name} must be positive: {revision}")
+    return revision
 
 
 def _embedding_identity(
@@ -334,6 +357,23 @@ def _lost_content_digests(
     return result
 
 
+def _image_identities(
+    rows: Sequence[ImageFileRow],
+) -> list[dict[str, object]]:
+    identities: list[dict[str, object]] = []
+    for row in rows:
+        try:
+            identities.append(_image_identity(row))
+        except Exception:
+            logger.error(
+                "Auction image fingerprint failed: file_id=%s path=%s",
+                row.file_id,
+                row.file_path,
+            )
+            raise
+    return identities
+
+
 def _image_identity(row: ImageFileRow) -> dict[str, object]:
     raw_path = Path(row.file_path).expanduser()
     absolute_path = raw_path.absolute()
@@ -380,6 +420,8 @@ def _part_path(
     lost_embedding_identity: str,
     model_identity: str,
     top_k: int,
+    *,
+    lost_content_revision: int | None = None,
 ) -> Path:
     identity = {
         "schema_version": CANDIDATE_IDENTITY_SCHEMA_VERSION,
@@ -387,6 +429,7 @@ def _part_path(
         "top_k": top_k,
         "model_identity": _required_identity(model_identity, "model_identity"),
         "lost_embedding_sha256": lost_embedding_identity,
+        "lost_content_revision": lost_content_revision,
         "auction_images": list(auction_image_identities),
     }
     serialized = json.dumps(
@@ -444,6 +487,7 @@ def _empty_candidate_columns() -> dict[str, list]:
         "lost_file_ids": [],
         "lost_content_versions": [],
         "lost_content_sha256": [],
+        "lost_content_revisions": [],
         "ranks": [],
         "blocking_scores": [],
     }

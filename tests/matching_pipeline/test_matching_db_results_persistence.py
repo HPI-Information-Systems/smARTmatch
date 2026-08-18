@@ -17,6 +17,13 @@ UUID_3 = UUID(int=3)
 PROGRAM_ID = UUID(int=99)
 
 
+def _snapshot_kwargs(versions: dict[str, int]) -> dict[str, object]:
+    return {
+        "expected_lost_content_revision": 1,
+        "expected_auction_content_versions": versions,
+    }
+
+
 class DbHelperTests(unittest.TestCase):
     def test_stable_program_id_is_deterministic_and_input_sensitive(self) -> None:
         first = db_results.stable_matching_program_id("matcher", "1")
@@ -162,6 +169,57 @@ class DbHelperTests(unittest.TestCase):
             db_results._merge_ids([2, 1, 2], [], [3, 1, 4]), [2, 1, 3, 4]
         )
 
+    def test_content_snapshot_validation_locks_and_checks_both_versions(self) -> None:
+        cursor = Cursor(
+            content_version_rows=[(10, 2), (11, 3)],
+            lost_revision_row=(7,),
+        )
+
+        db_results._lock_and_validate_image_content_snapshot(
+            cursor,
+            [11, 10],
+            expected_lost_content_revision=7,
+            expected_auction_content_versions={"10": 2, "11": 3},
+        )
+
+        image_sql, image_params = cursor.execute_calls[0]
+        revision_sql, revision_params = cursor.execute_calls[1]
+        self.assertIn("FROM image_file", image_sql)
+        self.assertIn("FOR SHARE", image_sql)
+        self.assertEqual(image_params, ([10, 11],))
+        self.assertIn("FROM image_matching_input_state", revision_sql)
+        self.assertIn("FOR SHARE", revision_sql)
+        self.assertIsNone(revision_params)
+
+    def test_content_snapshot_validation_rejects_stale_artifacts(self) -> None:
+        stale_auction = Cursor(
+            content_version_rows=[(10, 3)],
+            lost_revision_row=(7,),
+        )
+        with self.assertRaisesRegex(
+            db_results.ImageContentSnapshotChanged, "Auction image content changed"
+        ):
+            db_results._lock_and_validate_image_content_snapshot(
+                stale_auction,
+                [10],
+                expected_lost_content_revision=7,
+                expected_auction_content_versions={"10": 2},
+            )
+
+        stale_lost = Cursor(
+            content_version_rows=[(10, 2)],
+            lost_revision_row=(8,),
+        )
+        with self.assertRaisesRegex(
+            db_results.ImageContentSnapshotChanged, "Lost-image content changed"
+        ):
+            db_results._lock_and_validate_image_content_snapshot(
+                stale_lost,
+                [10],
+                expected_lost_content_revision=7,
+                expected_auction_content_versions={"10": 2},
+            )
+
 
 class DbTransactionTests(unittest.TestCase):
     @staticmethod
@@ -172,24 +230,34 @@ class DbTransactionTests(unittest.TestCase):
 
     def test_write_matching_run_delegates_structured_fields(self) -> None:
         match = self._accepted_match()
-        run = ImageMatchingRunResult(["10"], [match], 1, 0, 0)
+        run = ImageMatchingRunResult(
+            ["10"], [match], 1, 0, 0, 1, {"10": 2}
+        )
         sentinel = db_results.DbWriteResult(None, 1, 0, 1, 0, 0, 0)
         with patch.object(
             db_results, "write_image_matching_results_to_db", return_value=sentinel
         ) as write:
             self.assertIs(db_results.write_matching_run_to_db(run), sentinel)
-        write.assert_called_once_with([match], ["10"])
+        write.assert_called_once_with(
+            [match],
+            ["10"],
+            expected_lost_content_revision=1,
+            expected_auction_content_versions={"10": 2},
+        )
 
     def test_successful_accepted_write_commits_all_operations(self) -> None:
         cursor = Cursor(
             auction_rows=[(10, UUID_1), (11, UUID_2)],
             lost_rows=[(20, UUID_3)],
+            content_version_rows=[(10, 2), (11, 3)],
             finalized_row=(2, 2, 1),
         )
         connection = Connection(cursor)
         with patch.object(db_results, "connect_db", return_value=connection):
             result = db_results.write_image_matching_results_to_db(
-                [self._accepted_match()], ["10", "11", "10"]
+                [self._accepted_match()],
+                ["10", "11", "10"],
+                **_snapshot_kwargs({"10": 2, "11": 3}),
             )
         expected_program = db_results.stable_matching_program_id(
             config.MATCHING_PROGRAM_NAME, config.MATCHING_PROGRAM_VERSION
@@ -220,10 +288,12 @@ class DbTransactionTests(unittest.TestCase):
         self.assertLess(invalidation_index, finalization_index)
 
     def test_successful_empty_write_only_finalizes_and_commits(self) -> None:
-        cursor = Cursor(finalized_row=(1, 1, 0))
+        cursor = Cursor(content_version_rows=[(7, 4)], finalized_row=(1, 1, 0))
         connection = Connection(cursor)
         with patch.object(db_results, "connect_db", return_value=connection):
-            result = db_results.write_image_matching_results_to_db([], ["7", "7"])
+            result = db_results.write_image_matching_results_to_db(
+                [], ["7", "7"], **_snapshot_kwargs({"7": 4})
+            )
         self.assertEqual(result, db_results.DbWriteResult(None, 0, 0, 1, 1, 1, 0))
         self.assertEqual(connection.commit_count, 1)
         self.assertEqual(connection.rollback_count, 0)
@@ -234,7 +304,7 @@ class DbTransactionTests(unittest.TestCase):
         )
 
     def test_missing_accepted_auction_link_rolls_back_and_closes(self) -> None:
-        cursor = Cursor(auction_rows=[])
+        cursor = Cursor(auction_rows=[], content_version_rows=[(10, 2)])
         connection = Connection(cursor)
         with (
             patch.object(db_results, "connect_db", return_value=connection),
@@ -244,7 +314,9 @@ class DbTransactionTests(unittest.TestCase):
             ),
         ):
             db_results.write_image_matching_results_to_db(
-                [self._accepted_match()], ["10"]
+                [self._accepted_match()],
+                ["10"],
+                **_snapshot_kwargs({"10": 2}),
             )
         self.assertEqual(connection.commit_count, 0)
         self.assertEqual(connection.rollback_count, 1)
@@ -255,6 +327,7 @@ class DbTransactionTests(unittest.TestCase):
         cursor = Cursor(
             auction_rows=[(10, UUID_1)],
             lost_rows=[(20, UUID_3)],
+            content_version_rows=[(10, 2)],
             fail_text="WITH written_pairs",
         )
         connection = Connection(cursor)
@@ -263,7 +336,9 @@ class DbTransactionTests(unittest.TestCase):
             self.assertRaisesRegex(RuntimeError, "synthetic cursor failure"),
         ):
             db_results.write_image_matching_results_to_db(
-                [self._accepted_match()], ["10"]
+                [self._accepted_match()],
+                ["10"],
+                **_snapshot_kwargs({"10": 2}),
             )
         self.assertEqual(connection.commit_count, 0)
         self.assertEqual(connection.rollback_count, 1)

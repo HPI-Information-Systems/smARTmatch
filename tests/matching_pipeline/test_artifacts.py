@@ -79,6 +79,7 @@ class ArtifactParquetTests(unittest.TestCase):
                 ],
                 ranks=[2, 1],
                 blocking_scores=[0.25, 0.5],
+                lost_content_revisions=[5, 5],
             )
 
             self.assertEqual(
@@ -91,6 +92,8 @@ class ArtifactParquetTests(unittest.TestCase):
                     {
                         "auction_file_id": "a1",
                         "auction_file_path": str((image_root / "auction" / "a1.jpg").resolve()),
+                        "auction_content_version": 2,
+                        "lost_content_revision": 5,
                         "match_candidates": [
                             {
                                 "lost_file_id": "l1",

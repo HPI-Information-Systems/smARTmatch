@@ -67,7 +67,11 @@ class PipelineArtifactIntegrationTests(unittest.TestCase):
                     "auction", [ImageFileRow("auction-1", auction_path)]
                 )
                 candidate_count, part_count, skipped_count = write_candidate_parts(
-                    [ImageFileRow("auction-1", auction_path)],
+                    [
+                        ImageFileRow(
+                            "auction-1", auction_path, content_version=2
+                        )
+                    ],
                     ["lost-1"],
                     np.asarray([[1.0, 0.0]], dtype=np.float32),
                     lambda: _EmbeddingModel(),
@@ -80,6 +84,7 @@ class PipelineArtifactIntegrationTests(unittest.TestCase):
                     top_k=1,
                     image_batch_size=1,
                     shard_size=1,
+                    lost_content_revision=7,
                 )
                 results_csv = root / "results.csv"
                 with mock.patch.object(
@@ -101,6 +106,8 @@ class PipelineArtifactIntegrationTests(unittest.TestCase):
 
         self.assertEqual((candidate_count, part_count, skipped_count), (1, 1, 0))
         self.assertEqual(result.processed_auction_file_ids, ["auction-1"])
+        self.assertEqual(result.lost_content_revision, 7)
+        self.assertEqual(result.auction_content_versions, {"auction-1": 2})
         self.assertEqual(result.pairs_processed, 1)
         self.assertEqual(len(result.accepted_matches), 1)
         accepted = result.accepted_matches[0]

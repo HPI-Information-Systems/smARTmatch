@@ -82,8 +82,11 @@ class EmbeddingCacheValidationTests(unittest.TestCase):
                 cache._generate_embeddings(bad_dimension, [row], 1)
 
             wrong_width = EmbeddingModel({str(row.file_path): [1, 0, 0]}, dimension=2)
-            with self.assertRaisesRegex(ValueError, "Expected embedding dimension 2"):
-                cache._generate_embeddings(wrong_width, [row], 1)
+            with self.assertLogs(cache.logger, level="ERROR") as errors:
+                with self.assertRaisesRegex(ValueError, "Expected embedding dimension 2"):
+                    cache._generate_embeddings(wrong_width, [row], 1)
+            self.assertIn("file_id=a", "\n".join(errors.output))
+            self.assertIn(str(row.file_path), "\n".join(errors.output))
 
         with self.assertRaisesRegex(ValueError, "dtype must be"):
             cache._numpy_dtype("float64")

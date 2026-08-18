@@ -127,6 +127,7 @@ class CandidateGenerationTests(unittest.TestCase):
                         hashlib.sha256(b"l1").hexdigest(),
                         hashlib.sha256(b"l0").hexdigest(),
                     ],
+                    "lost_content_revisions": [None, None],
                     "ranks": [1, 2],
                     "blocking_scores": [1.0, 0.0],
                 },
@@ -292,6 +293,36 @@ class CandidateGenerationTests(unittest.TestCase):
 
             self.assertFalse(stale.exists())
 
+    def test_embedding_failure_logs_specific_auction_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            image_path = output / "auction.jpg"
+            image_path.write_bytes(b"auction")
+            row = ImageFileRow("auction-id", image_path)
+            model = mock.Mock()
+            model.generate_embeddings_batch.side_effect = RuntimeError("inference failed")
+
+            with mock.patch.object(
+                candidates, "env_auction_to_lost_rankings_dir", return_value=output
+            ), self.assertLogs(candidates.logger, level="ERROR") as errors:
+                with self.assertRaisesRegex(RuntimeError, "inference failed"):
+                    candidates.write_candidate_parts(
+                        [row],
+                        ["lost"],
+                        np.asarray([[1.0, 0.0]], dtype=np.float32),
+                        lambda: model,
+                        model_identity="test/dino-model",
+                        lost_source_identity="lost-source-v1",
+                        **_lost_kwargs(["lost"]),
+                        top_k=1,
+                        image_batch_size=1,
+                        shard_size=1,
+                    )
+
+            output_text = "\n".join(errors.output)
+            self.assertIn("file_id=auction-id", output_text)
+            self.assertIn(str(image_path), output_text)
+
     def test_source_change_during_generation_clears_candidate_parts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp)
@@ -327,6 +358,40 @@ class CandidateGenerationTests(unittest.TestCase):
 
             self.assertEqual(list(output.glob("part-*.parquet")), [])
             write.assert_not_called()
+
+    def test_lost_content_revision_changes_parts_and_candidate_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_path = root / "auction.jpg"
+            image_path.write_bytes(b"auction")
+            row = ImageFileRow("auction", image_path)
+            image_identity = candidates._image_identity(row)
+            base_args = (
+                root,
+                0,
+                [image_identity],
+                "lost-embedding",
+                "model",
+                1,
+            )
+            self.assertNotEqual(
+                candidates._part_path(*base_args, lost_content_revision=1),
+                candidates._part_path(*base_args, lost_content_revision=2),
+            )
+
+            columns = candidates._empty_candidate_columns()
+            candidates._append_candidates(
+                columns,
+                [row],
+                ["lost"],
+                np.asarray([[0]]),
+                np.asarray([[0.5]]),
+                [image_identity],
+                [3],
+                ["a" * 64],
+                7,
+            )
+            self.assertEqual(columns["lost_content_revisions"], [7])
 
     def test_candidate_helpers_cover_identity_indices_and_empty_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -464,6 +529,7 @@ class CandidateGenerationTests(unittest.TestCase):
                     "lost_file_ids": [],
                     "lost_content_versions": [],
                     "lost_content_sha256": [],
+                    "lost_content_revisions": [],
                     "ranks": [],
                     "blocking_scores": [],
                 },

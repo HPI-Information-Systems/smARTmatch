@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -33,6 +33,8 @@ class ImageMatchingRunResult:
     pairs_processed: int
     failed_images: int
     failed_pairs: int
+    lost_content_revision: int | None = None
+    auction_content_versions: dict[str, int | None] = field(default_factory=dict)
 
     def __len__(self) -> int:
         return len(self.processed_auction_file_ids)

@@ -9,6 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from PIL import Image
+
 from _blocking_test_support import patched_dirs
 
 from matching_pipeline.image_blocking import pipeline
@@ -94,6 +96,8 @@ class PipelineRunTests(unittest.TestCase):
                 "reset_auction_image_matching_for_replay",
                 return_value=(7, 3),
             ) as reset, mock.patch.object(
+                pipeline, "read_lost_image_content_revision", return_value=6
+            ), mock.patch.object(
                 pipeline, "_load_inputs", return_value=([], [])
             ) as load, mock.patch.object(
                 pipeline, "write_image_files_parquet"
@@ -195,12 +199,129 @@ class PipelineRunTests(unittest.TestCase):
                 4,
                 model_identity="test/dino-model",
                 lost_source_identity="lost-source-v1",
+                lost_content_revision=None,
                 lost_content_versions={"l1": None, "l2": None},
                 lost_content_sha256={
                     file_id: identity["source_sha256"]
                     for file_id, identity in _source_identities("l1", "l2").items()
                 },
             )
+            mark.assert_not_called()
+
+    def test_db_run_skips_unreadable_rows_and_marks_only_usable_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            good_lost_path = root / "good-lost"
+            good_auction_path = root / "good-auction"
+            bad_lost_path = root / "bad-lost"
+            bad_auction_path = root / "bad-auction"
+            Image.new("RGB", (4, 4), "red").save(good_lost_path, format="JPEG")
+            Image.new("RGB", (4, 4), "blue").save(
+                good_auction_path, format="PNG"
+            )
+            bad_lost_path.write_bytes(b"not an image")
+            bad_auction_path.write_bytes(b"also not an image")
+            good_lost = ImageFileRow(
+                "good-lost", good_lost_path, content_version=1
+            )
+            bad_lost = ImageFileRow("bad-lost", bad_lost_path, content_version=2)
+            good_auction = ImageFileRow(
+                "good-auction", good_auction_path, content_version=3
+            )
+            bad_auction = ImageFileRow(
+                "bad-auction", bad_auction_path, content_version=4
+            )
+            cache = SimpleNamespace(
+                file_ids=["good-lost"],
+                embeddings=SimpleNamespace(shape=(1, 2)),
+                metadata={
+                    "model_id": "test/dino-model",
+                    "source_identity_sha256": "lost-source-v1",
+                    "source_identities": _source_identities("good-lost"),
+                },
+            )
+            with patched_dirs(root, root / "candidates"), mock.patch.object(
+                pipeline, "has_unprocessed_auction_image_file_rows", return_value=True
+            ), mock.patch.object(
+                pipeline, "read_lost_image_content_revision", return_value=6
+            ), mock.patch.object(
+                pipeline,
+                "load_db_image_file_rows",
+                return_value=([good_lost, bad_lost], [good_auction, bad_auction]),
+            ), mock.patch.object(
+                pipeline, "write_image_files_parquet"
+            ) as write, mock.patch.object(
+                pipeline, "ensure_lost_embedding_cache", return_value=cache
+            ) as ensure, mock.patch.object(
+                pipeline, "_write_candidates", return_value=(1, 1, 0)
+            ) as candidates, mock.patch.object(
+                pipeline, "source_identity_sha256", return_value="lost-source-v1"
+            ), mock.patch.object(
+                pipeline, "_ModelProvider"
+            ), mock.patch.object(
+                pipeline, "mark_image_files_embedded", return_value=2
+            ) as mark, self.assertLogs(
+                pipeline.logger, level="WARNING"
+            ) as logs:
+                result = pipeline.run_image_blocking(auction_limit=1)
+
+            self.assertEqual(ensure.call_args.args[0], [good_lost])
+            self.assertEqual(candidates.call_args.args[0], [good_auction])
+            self.assertEqual(
+                candidates.call_args.kwargs["lost_content_revision"], 6
+            )
+            write.assert_has_calls(
+                [mock.call("lost", [good_lost]), mock.call("auction", [good_auction])]
+            )
+            mark.assert_called_once_with(
+                [
+                    ExpectedImageVersion("good-lost", 1),
+                    ExpectedImageVersion("good-auction", 3),
+                ]
+            )
+            self.assertEqual(result.lost_image_count, 1)
+            self.assertEqual(result.auction_image_count, 1)
+            self.assertEqual(result.embedded_image_file_count, 2)
+            messages = "\n".join(logs.output)
+            self.assertIn("file_id=bad-lost", messages)
+            self.assertIn("file_id=bad-auction", messages)
+
+    def test_all_unreadable_auction_rows_are_a_successful_noop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            lost_path = root / "lost-image"
+            bad_auction_path = root / "bad-auction"
+            Image.new("RGB", (4, 4), "red").save(lost_path, format="JPEG")
+            bad_auction_path.write_bytes(b"not an image")
+            lost = ImageFileRow("lost", lost_path, content_version=1)
+            bad_auction = ImageFileRow(
+                "bad-auction", bad_auction_path, content_version=2
+            )
+            with patched_dirs(root, root / "candidates"), mock.patch.object(
+                pipeline, "has_unprocessed_auction_image_file_rows", return_value=True
+            ), mock.patch.object(
+                pipeline, "read_lost_image_content_revision", return_value=6
+            ), mock.patch.object(
+                pipeline,
+                "load_db_image_file_rows",
+                return_value=([lost], [bad_auction]),
+            ), mock.patch.object(
+                pipeline, "write_image_files_parquet"
+            ), mock.patch.object(
+                pipeline, "clear_candidate_parts"
+            ) as clear, mock.patch.object(
+                pipeline, "ensure_lost_embedding_cache"
+            ) as ensure, mock.patch.object(
+                pipeline, "_ModelProvider"
+            ) as model, mock.patch.object(
+                pipeline, "mark_image_files_embedded"
+            ) as mark:
+                result = pipeline.run_image_blocking(auction_limit=1)
+
+            self.assertEqual(result, pipeline.BlockingRunResult(root, 1, 0, 0, 0, 0, 0))
+            clear.assert_called_once_with(root / "candidates")
+            ensure.assert_not_called()
+            model.assert_not_called()
             mark.assert_not_called()
 
     def test_full_db_run_marks_all_embedded_ids(self) -> None:
@@ -219,6 +340,8 @@ class PipelineRunTests(unittest.TestCase):
             root = Path(tmp).resolve()
             with patched_dirs(root, root / "candidates"), mock.patch.object(
                 pipeline, "has_unprocessed_auction_image_file_rows", return_value=True
+            ), mock.patch.object(
+                pipeline, "read_lost_image_content_revision", return_value=6
             ), mock.patch.object(
                 pipeline, "_load_inputs", return_value=(lost, auction)
             ), mock.patch.object(pipeline, "write_image_files_parquet"), mock.patch.object(
@@ -257,6 +380,8 @@ class PipelineRunTests(unittest.TestCase):
             candidates = root / "candidates"
             with patched_dirs(root, candidates), mock.patch.object(
                 pipeline, "has_unprocessed_auction_image_file_rows", return_value=True
+            ), mock.patch.object(
+                pipeline, "read_lost_image_content_revision", return_value=6
             ), mock.patch.object(
                 pipeline, "_load_inputs", return_value=(lost, auction)
             ), mock.patch.object(

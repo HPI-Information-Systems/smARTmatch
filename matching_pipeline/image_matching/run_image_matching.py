@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+from itertools import chain
 from pathlib import Path
 from time import perf_counter
+from typing import Mapping
 
 from matching_pipeline.shared.env import env_auction_to_lost_rankings_dir, env_cache_dir
 from matching_pipeline.image_matching.models import (
@@ -21,6 +23,7 @@ from matching_pipeline.shared.artifacts import (
 )
 
 _DEFAULT_FEATS_DIR = object()
+_UNSET_REVISION = object()
 _PROGRESS_INTERVAL_SECONDS = 90.0
 
 logger = logging.getLogger(__name__)
@@ -67,6 +70,15 @@ def run_image_matching(
             failed_pairs=0,
         )
 
+    candidate_items = iter(load_auction_to_lost_rankings_with_paths())
+    try:
+        first_item = next(candidate_items)
+    except StopIteration as exc:
+        raise ValueError(
+            "Candidate artifact summary reported rows, but no ranking rows were readable"
+        ) from exc
+    _require_candidate_content_identity(first_item)
+
     extractor = FeatureExtractor()
     matcher = FeatureMatcher()
     classifier = MatchClassifier()
@@ -83,12 +95,31 @@ def run_image_matching(
     )
     processed_file_ids: list[str] = []
     found_matches: list[AcceptedImageMatch] = []
+    lost_content_revision: object = _UNSET_REVISION
+    auction_content_versions: dict[str, int | None] = {}
     pairs_processed = 0
     failed_images = 0
     failed_pairs = 0
 
-    for item in load_auction_to_lost_rankings_with_paths():
+    for item in chain((first_item,), candidate_items):
+        _require_candidate_content_identity(item)
         auction_file_id = item["auction_file_id"]
+        item_lost_revision = item["lost_content_revision"]
+        if lost_content_revision is _UNSET_REVISION:
+            lost_content_revision = item_lost_revision
+        elif lost_content_revision != item_lost_revision:
+            raise ValueError(
+                "Candidate artifacts contain inconsistent lost-content revisions"
+            )
+        item_auction_version = item["auction_content_version"]
+        previous_version = auction_content_versions.setdefault(
+            auction_file_id, item_auction_version
+        )
+        if previous_version != item_auction_version:
+            raise ValueError(
+                "Candidate artifacts contain inconsistent auction content versions "
+                f"for image_file_id={auction_file_id}"
+            )
         auction_file_path = Path(item["auction_file_path"])
         try:
             feats0 = extractor.extract(auction_file_path)
@@ -192,7 +223,24 @@ def run_image_matching(
         pairs_processed=pairs_processed,
         failed_images=failed_images,
         failed_pairs=failed_pairs,
+        lost_content_revision=(
+            None if lost_content_revision is _UNSET_REVISION else lost_content_revision
+        ),
+        auction_content_versions=auction_content_versions,
     )
+
+
+def _require_candidate_content_identity(item: Mapping[str, object]) -> None:
+    if item.get("lost_content_revision") is None:
+        raise ValueError(
+            "Candidate artifacts are missing the lost-image content revision; "
+            "rerun DB-backed image blocking"
+        )
+    if item.get("auction_content_version") is None:
+        raise ValueError(
+            "Candidate artifacts are missing an auction content version; "
+            "rerun DB-backed image blocking"
+        )
 
 
 def _candidate_artifact_summary() -> dict[str, int]:

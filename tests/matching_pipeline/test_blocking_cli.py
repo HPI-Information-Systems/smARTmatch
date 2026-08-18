@@ -107,37 +107,25 @@ class CliTests(unittest.TestCase):
         self.assertIn("Input CSV: input.csv", output)
         self.assertIn("Auction images: 3", output)
 
-    def test_normal_cli_forwards_kwargs_prints_rows_and_wrapper_exit_code(self) -> None:
+    def test_normal_cli_forwards_kwargs_and_prints_aggregate_result(self) -> None:
         blocking_result = pipeline.BlockingRunResult(
             Path("cache"), 2, 1, 2, 1, 1, 2, 3
         )
-        rankings = [
-            {
-                "auction_file_id": "auction-long",
-                "match_candidates": [
-                    {"lost_file_id": "lost-1"},
-                    {"lost_file_id": "lost-2"},
-                ],
-            }
-        ]
         argv = ["blocking", "--input-csv", "input.csv", "--top-k", "2"]
         with mock.patch.object(sys, "argv", argv), mock.patch.object(
             cli, "configure_logging"
         ), mock.patch.object(
             cli, "run_image_blocking", return_value=blocking_result
-        ) as run, mock.patch.object(
-            cli, "load_auction_to_lost_rankings_with_paths", return_value=rankings
-        ), self.assertLogs(cli.logger, level="INFO") as captured:
+        ) as run, self.assertLogs(cli.logger, level="INFO") as captured:
             self.assertEqual(cli.parse_blocking_args_and_run_blocking(), 0)
 
         self.assertEqual(run.call_args.kwargs["input_csv"], Path("input.csv"))
         self.assertEqual(run.call_args.kwargs["top_k"], 2)
         self.assertNotIn("log_level", run.call_args.kwargs)
         output = "\n".join(captured.output)
-        self.assertIn("Blocking cache: cache", output)
-        self.assertIn("First candidate rankings", output)
-        self.assertIn("auction-long", output)
-        self.assertIn("lost-2", output)
+        self.assertIn("Blocking result: cache=cache", output)
+        self.assertIn("lost=2 auction=1", output)
+        self.assertNotIn("auction_file_id", output)
 
     def test_cli_propagates_pipeline_failure(self) -> None:
         with mock.patch.object(sys, "argv", ["blocking"]), mock.patch.object(
@@ -148,49 +136,10 @@ class CliTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "pipeline failed"):
                 cli.parse_blocking_args_and_run_blocking_with_result()
 
-    def test_ranking_preview_empty_limited_and_exhausted(self) -> None:
-        with mock.patch.object(
-            cli, "load_auction_to_lost_rankings_with_paths", return_value=[]
-        ), self.assertLogs(cli.logger, level="INFO") as captured:
-            cli._print_ranking_preview()
-        self.assertIn("no candidate rankings", "\n".join(captured.output))
-
-        rankings = [
-            {
-                "auction_file_id": "a1",
-                "match_candidates": [
-                    {"lost_file_id": "l1"},
-                    {"lost_file_id": "l2"},
-                ],
-            },
-            {"auction_file_id": "a2", "match_candidates": []},
-        ]
-        with mock.patch.object(
-            cli, "load_auction_to_lost_rankings_with_paths", return_value=rankings
-        ):
-            self.assertEqual(
-                cli._ranking_preview_rows(1), [("1", "a1", "1", "l1")]
-            )
-            self.assertEqual(
-                cli._ranking_preview_rows(5),
-                [("1", "a1", "1", "l1"), ("2", "a1", "2", "l2")],
-            )
-
-    def test_print_table_with_empty_and_wider_rows(self) -> None:
-        with self.assertLogs(cli.logger, level="INFO") as captured:
-            cli._print_table(("h", "header"), [])
-            cli._print_table(("h", "header"), [("long", "x")])
-        output = "\n".join(captured.output)
-        self.assertIn("h | header", output)
-        self.assertIn("long | x", output)
-
     def test_module_guard_exits_through_entrypoint(self) -> None:
         result = pipeline.BlockingRunResult(Path("cache"), 0, 0, 0, 0, 0, 0)
         with mock.patch.object(sys, "argv", ["blocking"]), mock.patch.object(
             pipeline, "run_image_blocking", return_value=result
-        ), mock.patch(
-            "matching_pipeline.shared.artifacts.load_auction_to_lost_rankings_with_paths",
-            return_value=[],
         ), mock.patch(
             "shared.logging_adapter.configure_logging"
         ), warnings.catch_warnings():

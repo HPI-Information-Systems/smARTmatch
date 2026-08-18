@@ -8,7 +8,6 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from time import perf_counter
 from typing import Callable, Sequence
 
 import numpy as np
@@ -17,6 +16,7 @@ from matching_pipeline.shared.env import env_dinov3_model_id
 
 from .config import DEFAULT_EMBEDDING_DTYPE
 from .input_sources import ImageFileRow
+from .progress import ImageProgress
 
 logger = logging.getLogger(__name__)
 
@@ -176,37 +176,34 @@ def _generate_embeddings(
 ) -> dict[str, np.ndarray]:
     model_dim = _model_dimension(model)
     generated: dict[str, np.ndarray] = {}
-    total_batches = _batch_count(len(rows), batch_size)
     logger.info(
         "Generating missing lost embeddings: images=%d batches=%d dim=%d",
         len(rows),
-        total_batches,
+        _batch_count(len(rows), batch_size),
         model_dim,
     )
-    for batch_number, start in enumerate(range(0, len(rows), batch_size), start=1):
-        batch_started_at = perf_counter()
-        batch = rows[start : start + batch_size]
-        paths = [str(row.file_path) for row in batch]
-        logger.info(
-            "Lost embedding batch %d/%d starting: images=%d first_file_id=%s first_path=%s",
-            batch_number,
-            total_batches,
-            len(batch),
-            batch[0].file_id,
-            batch[0].file_path,
-        )
-        embeddings = normalize_embeddings(
-            np.asarray(model.generate_embeddings_batch(paths)),
-            expected_dim=model_dim,
-        )
-        for row, embedding in zip(batch, embeddings, strict=True):
-            generated[row.file_id] = embedding
-        logger.info(
-            "Lost embedding batch %d/%d finished in %.1fs",
-            batch_number,
-            total_batches,
-            perf_counter() - batch_started_at,
-        )
+    completed = 0
+    with ImageProgress("lost_embeddings", len(rows)) as progress:
+        for start in range(0, len(rows), batch_size):
+            batch = rows[start : start + batch_size]
+            paths = [str(row.file_path) for row in batch]
+            try:
+                embeddings = normalize_embeddings(
+                    np.asarray(model.generate_embeddings_batch(paths)),
+                    expected_dim=model_dim,
+                )
+                for row, embedding in zip(batch, embeddings, strict=True):
+                    generated[row.file_id] = embedding
+            except Exception:
+                for row in batch:
+                    logger.error(
+                        "Lost image embedding failed: file_id=%s path=%s",
+                        row.file_id,
+                        row.file_path,
+                    )
+                raise
+            completed += len(batch)
+            progress.update(completed)
     return generated
 
 
@@ -220,36 +217,45 @@ def _source_identities(
 ) -> dict[str, dict[str, object]]:
     identities: dict[str, dict[str, object]] = {}
     for row in rows:
-        if row.file_id in identities:
-            raise ValueError(f"Duplicate lost image file_id: {row.file_id}")
-        raw_path = Path(row.file_path).expanduser()
-        absolute_path = raw_path.absolute()
-        resolved_path = raw_path.resolve(strict=True)
-        initial_stat = resolved_path.stat()
-        digest = hashlib.sha256()
-        with resolved_path.open("rb") as source:
-            while chunk := source.read(_FINGERPRINT_CHUNK_SIZE):
-                digest.update(chunk)
-        final_stat = resolved_path.stat()
-        if _stat_signature(initial_stat) != _stat_signature(final_stat):
-            raise RuntimeError(f"Lost image changed while fingerprinting: {raw_path}")
-        source_sha256 = digest.hexdigest()
-        if (
-            row.content_sha256 is not None
-            and row.content_sha256 != source_sha256
-        ):
-            raise RuntimeError(
-                "Lost image content does not match its database digest: "
-                f"image_file_id={row.file_id} path={raw_path}"
+        try:
+            if row.file_id in identities:
+                raise ValueError(f"Duplicate lost image file_id: {row.file_id}")
+            identities[row.file_id] = _source_identity(row)
+        except Exception:
+            logger.error(
+                "Lost image fingerprint failed: file_id=%s path=%s",
+                row.file_id,
+                row.file_path,
             )
-        identities[row.file_id] = {
-            "file_path": str(absolute_path),
-            "resolved_file_path": str(resolved_path),
-            "source_size": initial_stat.st_size,
-            "source_sha256": source_sha256,
-            "content_version": row.content_version,
-        }
+            raise
     return identities
+
+
+def _source_identity(row: ImageFileRow) -> dict[str, object]:
+    raw_path = Path(row.file_path).expanduser()
+    absolute_path = raw_path.absolute()
+    resolved_path = raw_path.resolve(strict=True)
+    initial_stat = resolved_path.stat()
+    digest = hashlib.sha256()
+    with resolved_path.open("rb") as source:
+        while chunk := source.read(_FINGERPRINT_CHUNK_SIZE):
+            digest.update(chunk)
+    final_stat = resolved_path.stat()
+    if _stat_signature(initial_stat) != _stat_signature(final_stat):
+        raise RuntimeError(f"Lost image changed while fingerprinting: {raw_path}")
+    source_sha256 = digest.hexdigest()
+    if row.content_sha256 is not None and row.content_sha256 != source_sha256:
+        raise RuntimeError(
+            "Lost image content does not match its database digest: "
+            f"image_file_id={row.file_id} path={raw_path}"
+        )
+    return {
+        "file_path": str(absolute_path),
+        "resolved_file_path": str(resolved_path),
+        "source_size": initial_stat.st_size,
+        "source_sha256": source_sha256,
+        "content_version": row.content_version,
+    }
 
 
 def _source_identity_sha256(

@@ -26,6 +26,7 @@ class RankingArtifactTests(TemporaryPipelineTest):
             lost_content_sha256=[lost_digest],
             ranks=["2"],
             blocking_scores=["0.25"],
+            lost_content_revisions=[7],
         )
         table = pq.read_table(output)
         self.assertEqual(
@@ -38,6 +39,7 @@ class RankingArtifactTests(TemporaryPipelineTest):
                     ("lost_file_id", pa.string()),
                     ("lost_content_version", pa.int64()),
                     ("lost_content_sha256", pa.string()),
+                    ("lost_content_revision", pa.int64()),
                     ("rank", pa.int16()),
                     ("blocking_score", pa.float32()),
                 ]
@@ -205,7 +207,12 @@ class RankingArtifactTests(TemporaryPipelineTest):
             with self.subTest(message=message):
                 with self.assertRaisesRegex(ValueError, message):
                     rankings._make_item(
-                        "a1", [(1, "l1", 0.5)], auction_paths, lost_paths
+                        "a1",
+                        None,
+                        None,
+                        [(1, "l1", 0.5)],
+                        auction_paths,
+                        lost_paths,
                     )
 
     def test_ranking_row_schema_and_value_validation(self) -> None:
@@ -217,7 +224,8 @@ class RankingArtifactTests(TemporaryPipelineTest):
             extra=["ignored"],
         )
         self.assertEqual(
-            list(rankings._iter_ranking_rows(pq, [path])), [("a", "l", 1, 0.5)]
+            list(rankings._iter_ranking_rows(pq, [path])),
+            [("a", None, None, "l", 1, 0.5)]
         )
 
         cases = [

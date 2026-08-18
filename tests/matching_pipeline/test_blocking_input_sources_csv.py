@@ -80,7 +80,11 @@ class InputSourceCsvTests(unittest.TestCase):
                 ("1,image.jpg,other\n", ValueError, "Invalid role"),
                 (",image.jpg,lost\n", ValueError, "Missing file_id"),
                 ("1,,lost\n", ValueError, "Missing file_path"),
-                ("1,missing.jpg,lost\n", FileNotFoundError, "Image file not found"),
+                (
+                    "1,missing.jpg,lost\n",
+                    FileNotFoundError,
+                    "file_id=1.*path=.*missing.jpg",
+                ),
                 (
                     "1,image.jpg,lost\n1,image.jpg,lost\n",
                     ValueError,

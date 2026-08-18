@@ -52,6 +52,27 @@ class MatchingRuntimeTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             runtime.run_image_matching(feats_dir="not-a-path")
 
+    def test_missing_content_identity_fails_before_model_initialization(self) -> None:
+        legacy_item = {
+            "auction_file_id": "legacy",
+            "auction_file_path": "legacy.jpg",
+            "match_candidates": [],
+        }
+        with (
+            mock.patch.object(
+                runtime, "_candidate_artifact_summary", return_value=_summary()
+            ),
+            mock.patch.object(
+                runtime,
+                "load_auction_to_lost_rankings_with_paths",
+                return_value=iter([legacy_item]),
+            ),
+            mock.patch.object(runtime, "FeatureExtractor") as extractor,
+            self.assertRaisesRegex(ValueError, "lost-image content revision"),
+        ):
+            runtime.run_image_matching(feats_dir=None)
+        extractor.assert_not_called()
+
     def test_success_rejection_pair_failure_and_image_failure(self) -> None:
         extractor = mock.Mock(device="cpu")
         matcher = mock.Mock(device="cpu")
@@ -77,6 +98,8 @@ class MatchingRuntimeTests(unittest.TestCase):
             {
                 "auction_file_id": "auction-1",
                 "auction_file_path": "auction.jpg",
+                "auction_content_version": 2,
+                "lost_content_revision": 7,
                 "match_candidates": [
                     _candidate("accepted", "lost-ok.jpg", "0.7"),
                     _candidate("rejected", "lost-no.jpg", 0.4),
@@ -86,6 +109,8 @@ class MatchingRuntimeTests(unittest.TestCase):
             {
                 "auction_file_id": "auction-2",
                 "auction_file_path": "auction-bad.jpg",
+                "auction_content_version": 3,
+                "lost_content_revision": 7,
                 "match_candidates": [_candidate("unused", "unused.jpg", 0.1)],
             },
         ]
@@ -137,6 +162,11 @@ class MatchingRuntimeTests(unittest.TestCase):
             )
 
         self.assertEqual(result.processed_auction_file_ids, [])
+        self.assertEqual(result.lost_content_revision, 7)
+        self.assertEqual(
+            result.auction_content_versions,
+            {"auction-1": 2, "auction-2": 3},
+        )
         self.assertEqual(
             (result.pairs_processed, result.failed_images, result.failed_pairs),
             (3, 1, 1),
@@ -171,11 +201,15 @@ class MatchingRuntimeTests(unittest.TestCase):
             {
                 "auction_file_id": "one",
                 "auction_file_path": "auction.jpg",
+                "auction_content_version": 2,
+                "lost_content_revision": 7,
                 "match_candidates": [_candidate("lost", "lost.jpg", 0.1)],
             },
             {
                 "auction_file_id": "empty",
                 "auction_file_path": "empty.jpg",
+                "auction_content_version": 3,
+                "lost_content_revision": 7,
                 "match_candidates": [],
             },
         ]
@@ -208,6 +242,8 @@ class MatchingRuntimeTests(unittest.TestCase):
         item = {
             "auction_file_id": "empty",
             "auction_file_path": "empty.jpg",
+            "auction_content_version": 2,
+            "lost_content_revision": 7,
             "match_candidates": [],
         }
         with (

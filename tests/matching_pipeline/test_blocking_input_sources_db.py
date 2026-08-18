@@ -68,6 +68,16 @@ class InputSourceDatabaseTests(unittest.TestCase):
         self.assertEqual(connection.closes, 1)
 
     def test_db_presence_and_schema_checks(self) -> None:
+        revision_connection = Connection([Cursor(one=(7,))])
+        with mock.patch.object(
+            input_sources, "connect_db", return_value=revision_connection
+        ):
+            self.assertEqual(input_sources.read_lost_image_content_revision(), 7)
+        self.assertIn(
+            "FROM image_matching_input_state",
+            revision_connection.used[0].executions[0][0],
+        )
+
         for value in (True, False):
             conn = Connection([Cursor(one=(value,))])
             with mock.patch.object(input_sources, "connect_db", return_value=conn):
@@ -163,7 +173,10 @@ class InputSourceDatabaseTests(unittest.TestCase):
                         False,
                         False,
                     )
-                with self.assertRaisesRegex(FileNotFoundError, "Image file not found"):
+                with self.assertRaisesRegex(
+                    FileNotFoundError,
+                    "image_file_id=id.*path=.*gone.jpg",
+                ):
                     input_sources._fetch_db_rows(
                         Connection([Cursor(rows=[("id", "gone.jpg")])]),
                         LOST_ROLE,

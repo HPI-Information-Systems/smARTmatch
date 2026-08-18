@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Mapping, Sequence
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from matching_pipeline.image_matching.config import (
@@ -24,6 +24,10 @@ from matching_pipeline.shared.db import connect_db
 logger = logging.getLogger(__name__)
 
 
+class ImageContentSnapshotChanged(RuntimeError):
+    """Candidate artifacts no longer match the database image-content snapshot."""
+
+
 @dataclass(frozen=True)
 class DbWriteResult:
     matching_program_id: UUID | None
@@ -39,12 +43,17 @@ def write_matching_run_to_db(result: ImageMatchingRunResult) -> DbWriteResult:
     return write_image_matching_results_to_db(
         result.accepted_matches,
         result.processed_auction_file_ids,
+        expected_lost_content_revision=result.lost_content_revision,
+        expected_auction_content_versions=result.auction_content_versions,
     )
 
 
 def write_image_matching_results_to_db(
     accepted_matches: Sequence[AcceptedImageMatch],
     processed_auction_file_ids: Sequence[str],
+    *,
+    expected_lost_content_revision: int | None = None,
+    expected_auction_content_versions: Mapping[str, int | None] | None = None,
 ) -> DbWriteResult:
     """Persist accepted matches and mark processed auction images atomically."""
     processed_ids = coerce_image_file_ids(processed_auction_file_ids, "auction_file_id")
@@ -64,6 +73,14 @@ def write_image_matching_results_to_db(
     conn = connect_db()
     try:
         with conn.cursor() as cur:
+            _lock_and_validate_image_content_snapshot(
+                cur,
+                auction_ids_to_resolve,
+                expected_lost_content_revision=expected_lost_content_revision,
+                expected_auction_content_versions=(
+                    expected_auction_content_versions or {}
+                ),
+            )
             writes: list[ImageMatchScoreWrite] = []
             if accepted_matches:
                 assert program_id is not None
@@ -119,6 +136,76 @@ def write_image_matching_results_to_db(
 
 def stable_matching_program_id(name: str, version: str) -> UUID:
     return uuid5(NAMESPACE_URL, f"smartmatch:matching_program:{name}:{version}")
+
+
+def _lock_and_validate_image_content_snapshot(
+    cur,
+    auction_image_file_ids: Sequence[int],
+    *,
+    expected_lost_content_revision: int | None,
+    expected_auction_content_versions: Mapping[str, int | None],
+) -> None:
+    if not auction_image_file_ids:
+        return
+    if expected_lost_content_revision is None:
+        raise ImageContentSnapshotChanged(
+            "Candidate artifacts are missing the lost-image content revision"
+        )
+    expected_revision = int(expected_lost_content_revision)
+    if expected_revision <= 0:
+        raise ImageContentSnapshotChanged(
+            "Candidate lost-image content revision must be positive"
+        )
+
+    expected_versions: dict[int, int] = {}
+    for image_file_id in auction_image_file_ids:
+        raw_version = expected_auction_content_versions.get(str(image_file_id))
+        if raw_version is None:
+            raise ImageContentSnapshotChanged(
+                "Candidate artifacts are missing the auction content version for "
+                f"image_file_id={image_file_id}"
+            )
+        version = int(raw_version)
+        if version <= 0:
+            raise ImageContentSnapshotChanged(
+                "Candidate auction content version must be positive for "
+                f"image_file_id={image_file_id}"
+            )
+        expected_versions[image_file_id] = version
+
+    ordered_ids = sorted(expected_versions)
+    cur.execute(
+        """
+        SELECT image_file_id, content_version
+        FROM image_file
+        WHERE image_file_id = ANY(%s)
+        ORDER BY image_file_id
+        FOR SHARE
+        """,
+        (ordered_ids,),
+    )
+    current_versions = {
+        int(image_file_id): int(content_version)
+        for image_file_id, content_version in cur.fetchall()
+    }
+    if current_versions != expected_versions:
+        raise ImageContentSnapshotChanged(
+            "Auction image content changed after candidate generation"
+        )
+
+    cur.execute(
+        """
+        SELECT lost_content_revision
+        FROM image_matching_input_state
+        WHERE singleton = true
+        FOR SHARE
+        """
+    )
+    row = cur.fetchone()
+    if row is None or int(row[0]) != expected_revision:
+        raise ImageContentSnapshotChanged(
+            "Lost-image content changed after candidate generation"
+        )
 
 
 def _ensure_matching_program(cur, program_id: UUID) -> None:

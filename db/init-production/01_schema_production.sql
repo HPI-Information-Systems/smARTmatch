@@ -84,6 +84,18 @@ CREATE TABLE IF NOT EXISTS literature_source (
     publishing_location_id uuid REFERENCES location(location_id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS image_matching_input_state (
+    singleton boolean PRIMARY KEY DEFAULT true,
+    lost_content_revision bigint NOT NULL DEFAULT 1,
+    CONSTRAINT ck_image_matching_input_state_singleton CHECK (singleton),
+    CONSTRAINT ck_image_matching_input_state_revision
+        CHECK (lost_content_revision > 0)
+);
+
+INSERT INTO image_matching_input_state (singleton, lost_content_revision)
+VALUES (true, 1)
+ON CONFLICT (singleton) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS image_file (
     image_file_id serial PRIMARY KEY,
     file_path text UNIQUE,
@@ -384,6 +396,189 @@ CREATE TABLE IF NOT EXISTS match_score (
     bookmarked         boolean,
     PRIMARY KEY (lost_id, auction_id)
 );
+
+CREATE OR REPLACE FUNCTION invalidate_all_image_matching_for_lost_change()
+RETURNS void AS $$
+BEGIN
+    -- One global invalidation is sufficient for every lost-image mutation in the
+    -- current transaction and avoids repeatedly scanning the score/link tables.
+    IF current_setting('smartmatch.lost_invalidation_done', true) = '1' THEN
+        RETURN;
+    END IF;
+    PERFORM set_config('smartmatch.lost_invalidation_done', '1', true);
+
+    UPDATE image_matching_input_state
+    SET lost_content_revision = lost_content_revision + 1
+    WHERE singleton = true;
+
+    UPDATE match_score
+    SET image_matching_confidence = NULL,
+        image_final_score = NULL,
+        image_blocking_similarity = NULL,
+        image_match_date = NULL,
+        image_matching_program = NULL,
+        image_visualization = '{}'::jsonb,
+        best_image_file_id = NULL
+    WHERE metadata_final_score IS NOT NULL
+      AND (
+          image_matching_confidence IS NOT NULL
+          OR image_final_score IS NOT NULL
+          OR image_blocking_similarity IS NOT NULL
+          OR image_match_date IS NOT NULL
+          OR image_matching_program IS NOT NULL
+          OR image_visualization <> '{}'::jsonb
+          OR best_image_file_id IS NOT NULL
+      );
+
+    DELETE FROM match_score
+    WHERE metadata_final_score IS NULL;
+
+    UPDATE auction_artwork_image_file link
+    SET is_image_matching_processed = false,
+        is_image_matching_completed_without_error = false
+    FROM image_file image
+    WHERE image.image_file_id = link.image_file_id
+      AND image.cleaned_up_at IS NULL
+      AND image.file_path IS NOT NULL
+      AND (
+          link.is_image_matching_processed = true
+          OR link.is_image_matching_completed_without_error = true
+      );
+
+    UPDATE auction_artwork artwork
+    SET is_image_matching_processed = false,
+        is_image_matching_processed_at = NULL
+    WHERE EXISTS (
+            SELECT 1
+            FROM auction_artwork_image_file link
+            JOIN image_file image USING (image_file_id)
+            WHERE link.auction_artwork_id = artwork.auction_artwork_id
+              AND image.cleaned_up_at IS NULL
+              AND image.file_path IS NOT NULL
+        )
+      AND (
+          artwork.is_image_matching_processed = true
+          OR artwork.is_image_matching_processed_at IS NOT NULL
+      );
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION invalidate_image_matching_after_lost_link_change()
+RETURNS trigger AS $$
+BEGIN
+    PERFORM invalidate_all_image_matching_for_lost_change();
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_invalidate_image_matching_after_lost_link_change
+ON lost_artwork_image_file;
+
+CREATE TRIGGER trg_invalidate_image_matching_after_lost_link_change
+AFTER INSERT OR DELETE OR UPDATE ON lost_artwork_image_file
+FOR EACH ROW
+EXECUTE FUNCTION invalidate_image_matching_after_lost_link_change();
+
+CREATE OR REPLACE FUNCTION invalidate_image_matching_after_content_change()
+RETURNS trigger AS $$
+DECLARE
+    lost_image_changed boolean;
+    affected_auction_ids uuid[];
+BEGIN
+    IF NEW.content_sha256 IS NOT DISTINCT FROM OLD.content_sha256 THEN
+        RETURN NEW;
+    END IF;
+
+    SELECT EXISTS (
+        SELECT 1
+        FROM lost_artwork_image_file link
+        WHERE link.image_file_id = OLD.image_file_id
+    )
+    INTO lost_image_changed;
+
+    SELECT COALESCE(
+        array_agg(DISTINCT link.auction_artwork_id),
+        ARRAY[]::uuid[]
+    )
+    INTO affected_auction_ids
+    FROM auction_artwork_image_file link
+    WHERE link.image_file_id = OLD.image_file_id;
+
+    IF lost_image_changed THEN
+        PERFORM invalidate_all_image_matching_for_lost_change();
+    ELSIF cardinality(affected_auction_ids) > 0 THEN
+        -- Scores are artwork-level aggregates. Recompute every live sibling image
+        -- for each artwork that linked to the replaced auction image.
+        UPDATE match_score
+        SET image_matching_confidence = NULL,
+            image_final_score = NULL,
+            image_blocking_similarity = NULL,
+            image_match_date = NULL,
+            image_matching_program = NULL,
+            image_visualization = '{}'::jsonb,
+            best_image_file_id = NULL
+        WHERE metadata_final_score IS NOT NULL
+          AND auction_id = ANY(affected_auction_ids)
+          AND (
+              image_matching_confidence IS NOT NULL
+              OR image_final_score IS NOT NULL
+              OR image_blocking_similarity IS NOT NULL
+              OR image_match_date IS NOT NULL
+              OR image_matching_program IS NOT NULL
+              OR image_visualization <> '{}'::jsonb
+              OR best_image_file_id IS NOT NULL
+          );
+
+        DELETE FROM match_score
+        WHERE metadata_final_score IS NULL
+          AND auction_id = ANY(affected_auction_ids);
+
+        UPDATE auction_artwork_image_file link
+        SET is_image_matching_processed = false,
+            is_image_matching_completed_without_error = false
+        FROM image_file image
+        WHERE image.image_file_id = link.image_file_id
+          AND image.cleaned_up_at IS NULL
+          AND image.file_path IS NOT NULL
+          AND link.auction_artwork_id = ANY(affected_auction_ids)
+          AND (
+              link.is_image_matching_processed = true
+              OR link.is_image_matching_completed_without_error = true
+          );
+
+        UPDATE auction_artwork artwork
+        SET is_image_matching_processed = false,
+            is_image_matching_processed_at = NULL
+        WHERE artwork.auction_artwork_id = ANY(affected_auction_ids)
+          AND EXISTS (
+                SELECT 1
+                FROM auction_artwork_image_file link
+                JOIN image_file image USING (image_file_id)
+                WHERE link.auction_artwork_id = artwork.auction_artwork_id
+                  AND image.cleaned_up_at IS NULL
+                  AND image.file_path IS NOT NULL
+            )
+          AND (
+              artwork.is_image_matching_processed = true
+              OR artwork.is_image_matching_processed_at IS NOT NULL
+          );
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_invalidate_image_matching_after_content_change
+ON image_file;
+
+CREATE TRIGGER trg_invalidate_image_matching_after_content_change
+AFTER UPDATE OF content_sha256 ON image_file
+FOR EACH ROW
+WHEN (NEW.content_sha256 IS DISTINCT FROM OLD.content_sha256)
+EXECUTE FUNCTION invalidate_image_matching_after_content_change();
 
 CREATE TABLE IF NOT EXISTS dict_technique (
     technique_name       varchar(50) PRIMARY KEY,

@@ -17,11 +17,12 @@ from matching_pipeline.shared.env import (
     env_non_gpu_inference_allowed,
 )
 
+from .image_loading import INPUT_IMAGE_FORMATS, load_rgb_image
+
 TOKEN_POOLING_MODES = frozenset({"avg", "median", "min", "max"})
 POOLING_ALIASES = {"average": "avg", "mean": "avg"}
-# Pillow selects these decoders from the file signature, not the filename suffix.
-# Keep extensionless SPSG image paths supported while excluding other parsers.
-_INPUT_IMAGE_FORMATS = ("JPEG", "PNG", "WEBP", "GIF")
+# Backward-compatible private alias used by runtime tests and callers.
+_INPUT_IMAGE_FORMATS = INPUT_IMAGE_FORMATS
 logger = logging.getLogger(__name__)
 
 
@@ -300,8 +301,11 @@ class DinoV3Adapter:
         image_path: str,
         pooling: Sequence[str] | str | None = None,
     ):
-        image = Image.open(image_path, formats=_INPUT_IMAGE_FORMATS).convert("RGB")
-        return self.generate_embedding_from_pil(image, pooling)
+        image = load_rgb_image(image_path)
+        try:
+            return self.generate_embedding_from_pil(image, pooling)
+        finally:
+            image.close()
 
     def generate_embedding_from_pil(
         self,
@@ -318,11 +322,14 @@ class DinoV3Adapter:
         image_paths: list[str],
         pooling: Sequence[str] | str | None = None,
     ):
-        images = [
-            Image.open(path, formats=_INPUT_IMAGE_FORMATS).convert("RGB")
-            for path in image_paths
-        ]
-        return self.generate_embeddings_batch_from_pil(images, pooling)
+        images: list[Image.Image] = []
+        try:
+            for path in image_paths:
+                images.append(load_rgb_image(path))
+            return self.generate_embeddings_batch_from_pil(images, pooling)
+        finally:
+            for image in images:
+                image.close()
 
     def generate_embeddings_batch_from_pil(
         self,

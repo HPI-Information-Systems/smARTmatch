@@ -20,11 +20,12 @@ This public repository contains the deployable smARTmatch pipeline and its opera
 |---|---|
 | `scrapers/`, `scraper_dashboard/` | Auction ingestion, scheduling, and status UI |
 | `matching_pipeline/` | Image blocking/matching and metadata extraction/normalization/matching |
+| `telemetry/` | Optional full-history inventory and selective telemetry sender; see its export-scope warning |
 | `db/init-production/` | Production schema, indexes, migrations, and integrity seed |
 | `frontend/` | Review interface for persisted matches |
 | `scripts/` | Pipeline scheduling and database maintenance/onboarding utilities |
 
-The root Compose stack has four services:
+The root Compose stack has five services. The optional `telemetry` service reads PostgreSQL and image metadata independently from the matching scheduler and sends to its configured HTTPS receiver:
 
 ```text
 scrapers ──► PostgreSQL + shared images
@@ -36,7 +37,7 @@ scrapers ──► PostgreSQL + shared images
                       frontend
 ```
 
-The four matching stages run sequentially in the single `matching_pipeline` container.
+The four matching stages run sequentially in the single `matching_pipeline` container. The `telemetry` container is part of the default Compose stack, while telemetry delivery is disabled by default. With `TELEMETRY_ENABLED=false`, its daemon remains safely idle and healthy without launching a synchronization worker, querying PostgreSQL, or making telemetry HTTP requests. Enabling it inventories the complete historical match graph, not only the previous seven days. Its image bakes Git and copied-source provenance during the Docker build and never mounts the host `.git` directory at runtime. Review [`telemetry/README.md`](telemetry/README.md) before enabling it.
 
 ## Requirements
 
@@ -58,7 +59,13 @@ chmod 600 .env.runtime
 export SMARTMATCH_ENV_FILE=.env.runtime
 ```
 
-`.env.runtime` is ignored by Git. The development Compose file publishes its ports on all host interfaces, so restrict them with a firewall or production override.
+`.env.runtime` is ignored by Git. The telemetry image resolves `HEAD` from the
+Git references admitted to its build context and combines that commit with a
+hash of the exact copied source. Raw reference files remain confined to a
+throwaway build stage; the final image receives only the generated provenance
+artifact and does not install Git. The development Compose file publishes
+its ports on all host interfaces, so restrict
+them with a firewall or production override.
 
 2. Validate and start the stack:
 
@@ -67,6 +74,13 @@ docker compose config --quiet
 docker compose up -d --build
 docker compose ps
 ```
+
+`matching_pipeline` and `telemetry` publish work-aware Compose health rather
+than process liveness alone. A failed matching cycle or terminal/exhausted
+telemetry attempt becomes `unhealthy`; a later successful run recovers it.
+Intentional telemetry disablement remains healthy. The daemons continue their
+normal retry schedules because Compose does not restart containers merely for
+an unhealthy status.
 
 The base Compose service requests all available GPUs with `gpus: all`. The tracked environment uses CUDA-backed DINOv3 and vLLM metadata inference. A fresh database is initialized with a compact integrity dataset and the corresponding files under `db/images/pipeline_test_set/`.
 
@@ -165,7 +179,7 @@ The backup script temporarily stops and restarts `scrapers` when it is running. 
 Do not run manual image imports, migrations, or restores during a backup. A restore requires all application services to be stopped:
 
 ```bash
-docker compose stop scrapers matching_pipeline frontend &&
+docker compose stop scrapers matching_pipeline telemetry frontend &&
   ./scripts/restore.sh backups/smartmatch_YYYYMMDD_HHMMSS
 ```
 
@@ -183,7 +197,7 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-The root file is for local development and offline tests; container builds do not install it. Each Python service installs its dedicated runtime manifest: `scrapers/requirements.txt`, `frontend/requirements.txt`, or `matching_pipeline/requirements.txt`.
+The root file is for local development and offline tests; container builds do not install it. Each Python service installs its dedicated runtime manifest: `scrapers/requirements.txt`, `frontend/requirements.txt`, `matching_pipeline/requirements.txt`, or `telemetry/requirements.txt`.
 
 For local matching runtime dependencies, also install the combined lock and pinned LightGlue revision used by the Docker image:
 

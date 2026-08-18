@@ -1,0 +1,2 @@
+# Runtime dependency for the telemetry sender. Other component locks are inspected, not installed.
+psycopg[binary]==3.2.2

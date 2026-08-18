@@ -1,4 +1,10 @@
-.git
+# Build provenance resolves HEAD from a minimal Git view. Keep repository
+# configuration, history, logs, hooks, and index out of the Docker context.
+.git/*
+!.git/HEAD
+!.git/packed-refs
+!.git/refs/
+!.git/refs/**
 .gitignore
 .pi/
 .DS_Store

@@ -34,16 +34,16 @@ timestamp="$(date +%Y%m%d_%H%M%S)"
 ./scripts/backup.sh "backups/smartmatch_${timestamp}"
 ```
 
-While holding the shared maintenance lock, the script stops `scrapers` and `matching_pipeline` if they are running so neither image ingestion nor matching cleanup can change database paths or image files between the database dump and image copy. It logs every stop and restart, restarts exactly the services that were running before the backup even when the backup fails, and leaves services that were already stopped alone. PostgreSQL and `frontend` remain online. Do not run manual image imports, migrations, or restores concurrently. Each backup contains `db_dump.dump` (PostgreSQL custom format) and `db/images/`; the progress output reports the image count, image size, dump size, and total backup size.
+While holding the shared maintenance lock, the script stops `scrapers` and `matching_pipeline` if they are running so neither image ingestion nor matching cleanup can change database paths or image files between the database dump and image copy. It logs every stop and restart, restarts exactly the services that were running before the backup even when the backup fails, and leaves services that were already stopped alone. PostgreSQL, `telemetry`, and `frontend` remain online. Do not run manual image imports, migrations, or restores concurrently. Each backup contains `db_dump.dump` (PostgreSQL custom format) and `db/images/`; the progress output reports the image count, image size, dump size, and total backup size.
 
 Test restores from a separate checkout and Compose project (or on a separate host), because the restore script always targets the current checkout's Compose `db` service and `db/images/`. A restore forcefully disconnects clients, drops and recreates the configured `POSTGRES_DB`, restores the dump, and replaces the entire live image directory. All previous database objects, rows, and image files are removed. Dump ownership and privileges are not applied; restored objects use the configured `POSTGRES_USER`. PostgreSQL roles and other cluster-wide settings are not part of this backup. Never overwrite the only production copy without a tested backup.
 
 A failure after the database is dropped can leave it absent or empty; a later image-installation failure can leave the restored database with the previous images. Keep application services stopped, fix the cause, and rerun the same restore. If cleanup reports a remaining `.images-previous.*` directory, inspect and remove that directory manually.
 
 ```bash
-if docker compose stop scrapers matching_pipeline frontend &&
+if docker compose stop scrapers matching_pipeline telemetry frontend &&
    ./scripts/restore.sh "backups/smartmatch_YYYYMMDD_HHMMSS"; then
-  docker compose up -d scrapers matching_pipeline frontend
+  docker compose up -d scrapers matching_pipeline telemetry frontend
 else
   echo "restore aborted; verify Compose service state before retrying" >&2
 fi
@@ -54,10 +54,10 @@ fi
 For an existing volume, stop application writers and use the helper; it creates a custom-format dump before applying SQL:
 
 ```bash
-docker compose stop scrapers matching_pipeline frontend
+docker compose stop scrapers matching_pipeline telemetry frontend
 if ENV_FILE="${SMARTMATCH_ENV_FILE:-.env.docker}" \
      ./scripts/apply_production_migration.sh path/to/migration.sql; then
-  docker compose up -d scrapers matching_pipeline frontend
+  docker compose up -d scrapers matching_pipeline telemetry frontend
 else
   echo "migration failed; writers remain stopped for review" >&2
 fi

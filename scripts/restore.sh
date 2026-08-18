@@ -15,6 +15,12 @@ log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
 
+print_docker_compose_command() {
+    printf '  docker compose --project-directory %q' "$ROOT_DIR"
+    printf ' %q' "$@"
+    printf '\n'
+}
+
 if [[ ${1:-} == "--help" || ${1:-} == "-h" ]]; then
     usage
     exit 0
@@ -48,6 +54,7 @@ LOCK_DIR="$LOCK_PARENT/.data-maintenance.lock"
 staged_dump=""
 staged_images=""
 previous_images_dir=""
+application_services=(scrapers matching_pipeline telemetry frontend)
 cleanup_restore() {
     local status=$?
     trap - EXIT
@@ -84,7 +91,9 @@ trap cleanup_restore EXIT
 
 cd "$ROOT_DIR"
 log "Checking that application services are stopped"
-for service in scrapers matching_pipeline frontend; do
+log "Stop application services before restoring with:"
+print_docker_compose_command stop "${application_services[@]}"
+for service in "${application_services[@]}"; do
     if ! running_service="$(docker compose ps --status running --quiet "$service")"; then
         fail "could not determine the state of Compose service: $service"
     fi
@@ -160,3 +169,5 @@ trap - EXIT
 
 log "[5/5] Restore complete"
 printf 'Restored database and images from: %s\n' "$BACKUP_PATH"
+printf 'Start application services with:\n'
+print_docker_compose_command up -d "${application_services[@]}"

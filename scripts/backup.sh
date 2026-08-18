@@ -15,6 +15,12 @@ log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
 }
 
+print_docker_compose_command() {
+    printf '  docker compose'
+    printf ' %q' "$@"
+    printf '\n'
+}
+
 if [[ ${1:-} == "--help" || ${1:-} == "-h" ]]; then
     usage
     exit 0
@@ -61,6 +67,7 @@ restart_stopped_services() {
 
     for service in "${services_to_restart[@]}"; do
         log "Starting service after backup: $service"
+        print_docker_compose_command start "$service"
         if docker compose start "$service"; then
             log "Service restarted after backup: $service"
         else
@@ -122,6 +129,7 @@ done
 
 services_to_restart=("${running_writer_services[@]}")
 log "Stopping services for backup: ${writer_services[*]}"
+print_docker_compose_command stop "${writer_services[@]}"
 if ! docker compose stop "${writer_services[@]}"; then
     fail "could not stop all database and image writer services"
 fi
@@ -131,7 +139,7 @@ done
 if [[ ${#services_to_restart[@]} -eq 0 ]]; then
     log "Both services were already stopped and will not be restarted."
 fi
-log "PostgreSQL and frontend remain online during the backup."
+log "PostgreSQL, telemetry, and frontend remain online during the backup."
 log "Do not run manual image imports, migrations, or restores until this backup finishes."
 
 log "[2/5] Creating PostgreSQL dump: $DUMP_PATH"

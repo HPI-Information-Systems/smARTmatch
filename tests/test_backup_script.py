@@ -103,6 +103,9 @@ def test_backup_stops_and_restarts_all_running_image_writers(tmp_path: Path) -> 
     assert "compose stop scrapers matching_pipeline" in docker_commands
     assert "compose start scrapers" in docker_commands
     assert "compose start matching_pipeline" in docker_commands
+    assert "docker compose stop scrapers matching_pipeline" in result.stdout
+    assert "docker compose start scrapers" in result.stdout
+    assert "docker compose start matching_pipeline" in result.stdout
     assert "Service confirmed stopped for backup: scrapers" in result.stdout
     assert "Service confirmed stopped for backup: matching_pipeline" in result.stdout
     assert "Service restarted after backup: scrapers" in result.stdout

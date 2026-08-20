@@ -36,9 +36,17 @@ timestamp="$(date +%Y%m%d_%H%M%S)"
 
 While holding the shared maintenance lock, the script stops `scrapers` and `matching_pipeline` if they are running so neither image ingestion nor matching cleanup can change database paths or image files between the database dump and image copy. It logs every stop and restart, restarts exactly the services that were running before the backup even when the backup fails, and leaves services that were already stopped alone. PostgreSQL, `telemetry`, and `frontend` remain online. Do not run manual image imports, migrations, or restores concurrently. Each backup contains `db_dump.dump` (PostgreSQL custom format) and `db/images/`; the progress output reports the image count, image size, dump size, and total backup size.
 
-Test restores from a separate checkout and Compose project (or on a separate host), because the restore script always targets the current checkout's Compose `db` service and `db/images/`. A restore forcefully disconnects clients, drops and recreates the configured `POSTGRES_DB`, restores the dump, and replaces the entire live image directory. All previous database objects, rows, and image files are removed. Dump ownership and privileges are not applied; restored objects use the configured `POSTGRES_USER`. PostgreSQL roles and other cluster-wide settings are not part of this backup. Never overwrite the only production copy without a tested backup.
+Test restores from a separate checkout and Compose project (or on a separate host), because the restore script always targets the current checkout's Compose `db` service and, for a complete restore, `db/images/`. A restore forcefully disconnects clients, drops and recreates the configured `POSTGRES_DB`, and restores the dump. The default mode also replaces the entire live image directory, removing all previous database objects, rows, and image files. Dump ownership and privileges are not applied; restored objects use the configured `POSTGRES_USER`. PostgreSQL roles and other cluster-wide settings are not part of this backup. Never overwrite the only production copy without a tested backup.
 
-A failure after the database is dropped can leave it absent or empty; a later image-installation failure can leave the restored database with the previous images. Keep application services stopped, fix the cause, and rerun the same restore. If cleanup reports a remaining `.images-previous.*` directory, inspect and remove that directory manually.
+Migration backups created by `apply_production_migration.sh` are standalone custom-format dumps rather than complete backup directories. Restore one while leaving `db/images/` untouched with `--only-db-dump`:
+
+```bash
+docker compose stop scrapers matching_pipeline telemetry frontend
+./scripts/restore.sh --only-db-dump \
+  backups/smartmatch_production_YYYYMMDD_HHMMSS.dmp
+```
+
+A failure after the database is dropped can leave it absent or empty; in default mode, a later image-installation failure can leave the restored database with the previous images. Keep application services stopped, fix the cause, and rerun the same restore. If cleanup reports a remaining `.images-previous.*` directory, inspect and remove that directory manually.
 
 ```bash
 if docker compose stop scrapers matching_pipeline telemetry frontend &&
@@ -87,7 +95,7 @@ Baseline mode still creates a database backup. Never baseline a migration merely
 
 Migration 19 collapses duplicate `image_file.file_path` rows without transferring `is_embedded=true` across image IDs. It resets each affected canonical image and dependent auction processing state so ID-keyed embedding and candidate artifacts cannot be trusted accidentally. After applying it, run image blocking successfully before running image cleanup; blocking rewrites the lost embedding cache with canonical IDs and replaces stale candidate identities.
 
-Migration 24 adds `image_file.content_sha256`, monotonic `content_version`, and the lost-image corpus revision used to reject stale in-flight matching writes. Its triggers invalidate image-derived scores and replay state whenever a scraper records different bytes or changes lost-image link membership: lost-corpus changes schedule every live auction image, while auction-image changes schedule all live sibling images of linked artworks. Metadata-bearing match rows keep their metadata and review fields; image-only rows are removed. Applying the migration performs the same one-time score invalidation and replay reset for legacy rows whose digest is unknown, so expect a complete image-matching replay. Apply it before deploying scraper, blocking, or matching code that uses these identities.
+Migration 24 adds `image_file.content_sha256`, monotonic `content_version`, and the lost-image corpus revision used to reject stale in-flight matching writes. Its triggers invalidate image-derived scores and replay state whenever a scraper records different bytes or changes lost-image link membership: lost-corpus changes schedule every live auction image, while auction-image changes schedule all live sibling images of linked artworks. Metadata-bearing match rows keep their metadata and review fields; image-only rows are removed. During the one-time legacy replay, the migration preserves existing scores while resetting embedding and image-processing state, avoiding an empty match view while the unchanged matcher catches up. Apply it before deploying scraper, blocking, or matching code that uses these identities.
 
 ## Lost-artwork institution classification
 

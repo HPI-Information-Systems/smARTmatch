@@ -6,7 +6,11 @@ from typing import Any, Optional
 import re
 
 from matching_pipeline.shared.env import get_model_config
-from matching_pipeline.shared.llm_runtime import create_vllm, is_debug_enabled
+from matching_pipeline.shared.llm_runtime import (
+    create_vllm,
+    is_debug_enabled,
+    run_vllm_generation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -223,7 +227,6 @@ def _run_vllm(
     max_new_tokens: int,
 ) -> list[str]:
     from transformers import AutoTokenizer
-    from vllm import SamplingParams
 
     llm = create_vllm(
         model=model_name,
@@ -234,6 +237,8 @@ def _run_vllm(
         max_model_len=4096,
         trust_remote_code=True,
     )
+    from vllm import SamplingParams
+
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     sampling_params = SamplingParams(temperature=0.0, max_tokens=max_new_tokens)
 
@@ -245,7 +250,13 @@ def _run_vllm(
         ]
         prompts.append(_chat_text_from_messages(tokenizer, messages))
 
-    outputs = llm.generate(prompts, sampling_params, use_tqdm=is_debug_enabled())
+    outputs = run_vllm_generation(
+        llm,
+        prompts,
+        sampling_params,
+        use_tqdm=is_debug_enabled(),
+        device=device,
+    )
     return [o.outputs[0].text.strip() for o in outputs]
 
 

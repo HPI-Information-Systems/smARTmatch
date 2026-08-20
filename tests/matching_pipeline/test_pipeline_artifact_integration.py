@@ -25,10 +25,17 @@ class _EmbeddingModel:
 class _FeatureExtractor:
     device = "cpu"
 
-    def extract(self, _path):
+    def extract_prepared(self, _prepared):
         return {"features": "auction"}
 
-    def load_or_extract(self, _features_path, _image_path, *, save_missing_feats):
+    def load_or_extract(
+        self,
+        _features_path,
+        _image_path,
+        *,
+        save_missing_feats,
+        prepared_image=None,
+    ):
         return {"features": "lost", "saved": save_missing_feats}
 
 
@@ -93,6 +100,13 @@ class PipelineArtifactIntegrationTests(unittest.TestCase):
                     matching_runtime, "FeatureMatcher", _FeatureMatcher
                 ), mock.patch.object(
                     matching_runtime, "MatchClassifier", _Classifier
+                ), mock.patch.object(
+                    matching_runtime,
+                    "prepare_image",
+                    side_effect=lambda path, *, resize: mock.Mock(
+                        path=Path(path),
+                        resize=resize,
+                    ),
                 ), mock.patch.object(
                     matching_runtime,
                     "build_keypoint_match_visualization",

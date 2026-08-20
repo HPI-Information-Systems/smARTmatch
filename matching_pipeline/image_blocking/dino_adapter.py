@@ -16,6 +16,16 @@ from matching_pipeline.shared.env import (
     env_hf_token,
     env_non_gpu_inference_allowed,
 )
+from matching_pipeline.shared.gpu_memory import (
+    InsufficientGpuMemoryError,
+    log_cuda_memory,
+    log_cuda_memory_best_effort,
+    require_cuda_memory,
+)
+from matching_pipeline.shared.hf_model_metadata import (
+    HfSafetensorsMetadata,
+    get_cached_hf_safetensors_metadata,
+)
 
 from .image_loading import INPUT_IMAGE_FORMATS, load_rgb_image
 
@@ -24,6 +34,82 @@ POOLING_ALIASES = {"average": "avg", "mean": "avg"}
 # Backward-compatible private alias used by runtime tests and callers.
 _INPUT_IMAGE_FORMATS = INPUT_IMAGE_FORMATS
 logger = logging.getLogger(__name__)
+
+_FLOATING_SAFETENSORS_DTYPES = frozenset(
+    {"F64", "F32", "F16", "BF16", "F8_E4M3", "F8_E5M2"}
+)
+
+
+def _runtime_parameter_bytes(
+    metadata: HfSafetensorsMetadata,
+    runtime_dtype: torch.dtype,
+) -> int:
+    unsupported = set(metadata.parameter_counts_by_dtype) - (
+        _FLOATING_SAFETENSORS_DTYPES
+    )
+    if unsupported:
+        raise ValueError(
+            "Cannot estimate DINOv3 runtime parameter bytes for safetensors "
+            f"dtypes: {sorted(unsupported)}"
+        )
+    item_size = torch.empty((), dtype=runtime_dtype).element_size()
+    return metadata.total_parameters * item_size
+
+
+def _preflight_dino_model_metadata(
+    model_id: str,
+    *,
+    token: str | None,
+    runtime_dtype: torch.dtype,
+) -> str | None:
+    """Run a fail-open metadata check before loading DINOv3 weights."""
+    try:
+        metadata = get_cached_hf_safetensors_metadata(
+            model_id,
+            token=token,
+        )
+        required_bytes = _runtime_parameter_bytes(metadata, runtime_dtype)
+        snapshot = log_cuda_memory(
+            logger,
+            context="before DINOv3 checkpoint load",
+            device="cuda",
+        )
+    except Exception:
+        logger.warning(
+            "DINOv3 metadata preflight unavailable; proceeding with normal load",
+            exc_info=True,
+        )
+        return None
+
+    try:
+        require_cuda_memory(
+            snapshot,
+            required_bytes,
+            component="DINOv3",
+            basis="allocator_available",
+        )
+    except InsufficientGpuMemoryError:
+        try:
+            log_cuda_memory(
+                logger,
+                context="failed DINOv3 memory preflight",
+                level=logging.ERROR,
+                snapshot=snapshot,
+            )
+        except Exception:
+            logger.error(
+                "Could not log DINOv3 preflight failure memory counters",
+                exc_info=True,
+            )
+        raise
+
+    logger.info(
+        "CUDA memory preflight passed: component=DINOv3 "
+        "estimated_parameters=%d bytes revision=%s",
+        required_bytes,
+        metadata.resolved_revision,
+    )
+    return metadata.resolved_revision
 
 
 class ImageGeometry(Protocol):
@@ -157,13 +243,29 @@ class DinoV3Adapter:
             processor_kwargs["token"] = self.hf_token
             model_kwargs["token"] = self.hf_token
         if self.device == "cuda":
-            model_kwargs["torch_dtype"] = (
+            runtime_dtype = (
                 torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
             )
+            model_kwargs["torch_dtype"] = runtime_dtype
+            resolved_revision = _preflight_dino_model_metadata(
+                self.model_id,
+                token=self.hf_token,
+                runtime_dtype=runtime_dtype,
+            )
+            if resolved_revision is not None:
+                model_kwargs["revision"] = resolved_revision
+                processor_kwargs["revision"] = resolved_revision
 
-        self.model = AutoModel.from_pretrained(self.model_id, **model_kwargs).to(
-            self.device
-        )
+        model = AutoModel.from_pretrained(self.model_id, **model_kwargs)
+        try:
+            self.model = model.to(self.device)
+        except torch.cuda.OutOfMemoryError:
+            log_cuda_memory_best_effort(
+                logger,
+                context="OOM loading DINOv3 model",
+                device=self.device,
+            )
+            raise
         self.model.eval()
 
         self.processor = None

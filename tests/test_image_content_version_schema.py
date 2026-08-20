@@ -42,6 +42,22 @@ class ImageContentVersionSchemaTests(unittest.TestCase):
             self.assertIn("auction_id = ANY(affected_auction_ids)", sql)
         self.assertIn("WHERE content_sha256 IS NULL", migration)
 
+    def test_migration_preserves_scores_during_initial_replay(self) -> None:
+        migration = (
+            _ROOT / "db/init-production/migrations/24_version_image_file_content.sql"
+        ).read_text()
+        replay = migration.split(
+            "-- Existing rows have no trustworthy digest.", maxsplit=1
+        )[1]
+
+        self.assertNotIn("UPDATE match_score", replay)
+        self.assertNotIn("DELETE FROM match_score", replay)
+        self.assertIn("UPDATE image_file", replay)
+        self.assertIn("SET is_embedded = false", replay)
+        self.assertIn("UPDATE auction_artwork_image_file", replay)
+        self.assertIn("is_image_matching_processed = false", replay)
+        self.assertIn("UPDATE auction_artwork artwork", replay)
+
     def test_generated_model_exposes_content_identity(self) -> None:
         self.assertIn("content_sha256", ImageFile.__table__.columns)
         self.assertIn("content_version", ImageFile.__table__.columns)

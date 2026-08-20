@@ -3,21 +3,38 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
 from itertools import chain
 from pathlib import Path
 from time import perf_counter
-from typing import Mapping
 
-from matching_pipeline.shared.env import env_auction_to_lost_rankings_dir, env_cache_dir
+import torch
+
+from matching_pipeline.image_matching.config import (
+    matching_image_resize_workers_from_env,
+)
 from matching_pipeline.image_matching.models import (
+    DEFAULT_IMAGE_RESIZE,
     FeatureExtractor,
     FeatureMatcher,
     MatchClassifier,
+    PreparedImage,
+    configure_parallel_image_resize,
+    prepare_image,
 )
-from matching_pipeline.image_matching.results import AcceptedImageMatch, ImageMatchingRunResult
+from matching_pipeline.shared.env import env_auction_to_lost_rankings_dir, env_cache_dir
+from matching_pipeline.shared.gpu_memory import log_cuda_memory_best_effort
+from matching_pipeline.image_matching.results import (
+    AcceptedImageMatch,
+    ImageMatchingRunResult,
+)
 from matching_pipeline.image_matching.utils import save_matches_to_csv
-from matching_pipeline.image_matching.visualization import build_keypoint_match_visualization
+from matching_pipeline.image_matching.visualization import (
+    build_keypoint_match_visualization,
+)
 from matching_pipeline.shared.artifacts import (
+    RankingArtifactSummary,
     load_auction_to_lost_rankings_with_paths,
     summarize_auction_to_lost_rankings,
 )
@@ -79,115 +96,120 @@ def run_image_matching(
         ) from exc
     _require_candidate_content_identity(first_item)
 
+    resize_workers = matching_image_resize_workers_from_env()
     extractor = FeatureExtractor()
     matcher = FeatureMatcher()
     classifier = MatchClassifier()
-    logger.info(
-        "Matching models initialized: extractor_device=%s matcher_device=%s",
-        extractor.device,
-        matcher.device,
+    configure_parallel_image_resize()
+    resize_executor = ThreadPoolExecutor(
+        max_workers=resize_workers,
+        thread_name_prefix="matching-image-resize",
     )
-
-    progress = _MatchingProgress(
-        total_auctions=summary["auction_file_count"],
-        total_pairs=summary["row_count"],
-        interval_seconds=_PROGRESS_INTERVAL_SECONDS,
-    )
-    processed_file_ids: list[str] = []
-    found_matches: list[AcceptedImageMatch] = []
-    lost_content_revision: object = _UNSET_REVISION
-    auction_content_versions: dict[str, int | None] = {}
-    pairs_processed = 0
-    failed_images = 0
-    failed_pairs = 0
-
-    for item in chain((first_item,), candidate_items):
-        _require_candidate_content_identity(item)
-        auction_file_id = item["auction_file_id"]
-        item_lost_revision = item["lost_content_revision"]
-        if lost_content_revision is _UNSET_REVISION:
-            lost_content_revision = item_lost_revision
-        elif lost_content_revision != item_lost_revision:
-            raise ValueError(
-                "Candidate artifacts contain inconsistent lost-content revisions"
-            )
-        item_auction_version = item["auction_content_version"]
-        previous_version = auction_content_versions.setdefault(
-            auction_file_id, item_auction_version
+    try:
+        logger.info(
+            "Matching models initialized: extractor_device=%s matcher_device=%s "
+            "resize_workers=%d resize_long_edge=%d",
+            extractor.device,
+            matcher.device,
+            resize_workers,
+            DEFAULT_IMAGE_RESIZE,
         )
-        if previous_version != item_auction_version:
-            raise ValueError(
-                "Candidate artifacts contain inconsistent auction content versions "
-                f"for image_file_id={auction_file_id}"
-            )
-        auction_file_path = Path(item["auction_file_path"])
-        try:
-            feats0 = extractor.extract(auction_file_path)
-        except Exception:
-            failed_images += 1
-            logger.exception(
-                "Auction image failed; leaving pending auction_file_id=%s path=%s candidates=%d",
-                auction_file_id,
-                auction_file_path,
-                len(item["match_candidates"]),
-            )
-            progress.maybe_log(
-                auctions_processed=len(processed_file_ids),
-                pairs_processed=pairs_processed,
-                matches_found=len(found_matches),
-                failed_images=failed_images,
-                failed_pairs=failed_pairs,
-            )
-            continue
 
-        auction_had_failed_pair = False
-        for candidate in item["match_candidates"]:
-            lost_file_id = candidate["lost_file_id"]
-            lost_file_path = Path(candidate["lost_file_path"])
-            try:
+        progress = _MatchingProgress(
+            total_auctions=summary["auction_file_count"],
+            total_pairs=summary["row_count"],
+            interval_seconds=_PROGRESS_INTERVAL_SECONDS,
+        )
+        processed_file_ids: list[str] = []
+        found_matches: list[AcceptedImageMatch] = []
+        lost_content_revision: object = _UNSET_REVISION
+        auction_content_versions: dict[str, int | None] = {}
+        pairs_processed = 0
+        failed_images = 0
+        failed_pairs = 0
+
+        for item in chain((first_item,), candidate_items):
+            _require_candidate_content_identity(item)
+            auction_file_id = item["auction_file_id"]
+            item_lost_revision = item["lost_content_revision"]
+            if lost_content_revision is _UNSET_REVISION:
+                lost_content_revision = item_lost_revision
+            elif lost_content_revision != item_lost_revision:
+                raise ValueError(
+                    "Candidate artifacts contain inconsistent lost-content revisions"
+                )
+            item_auction_version = item["auction_content_version"]
+            previous_version = auction_content_versions.setdefault(
+                auction_file_id, item_auction_version
+            )
+            if previous_version != item_auction_version:
+                raise ValueError(
+                    "Candidate artifacts contain inconsistent auction content versions "
+                    f"for image_file_id={auction_file_id}"
+                )
+            auction_file_path = Path(item["auction_file_path"])
+            auction_image_future: Future[PreparedImage] = resize_executor.submit(
+                prepare_image,
+                auction_file_path,
+                resize=DEFAULT_IMAGE_RESIZE,
+            )
+            candidates = item["match_candidates"]
+            candidate_needs_preparation: list[bool] = []
+            for candidate in candidates:
                 if effective_feats_dir:
-                    feats1_path = (effective_feats_dir / lost_file_id).with_suffix(".pt")
-                    feats1 = extractor.load_or_extract(
-                        feats1_path,
-                        lost_file_path,
-                        save_missing_feats=save_missing_feats,
+                    cache_base = (
+                        effective_feats_dir / candidate["lost_file_id"]
+                    ).with_suffix(".pt")
+                    cache_exists = (
+                        extractor.has_compatible_feature_cache(
+                            cache_base,
+                            Path(candidate["lost_file_path"]),
+                        )
+                        is True
                     )
                 else:
-                    feats1 = extractor.extract(lost_file_path)
-                matches01 = matcher.match(feats0, feats1)
-                prediction, confidence = classifier.classify_matches(matches01)
-                keypoint_matches = None
-                if prediction:
-                    keypoint_matches = build_keypoint_match_visualization(
-                        feats0,
-                        feats1,
-                        matches01,
+                    cache_exists = False
+                candidate_needs_preparation.append(not cache_exists)
+
+            candidate_image_futures: dict[int, Future[PreparedImage]] = {}
+            next_candidate_to_prepare = 0
+
+            def fill_candidate_preparation_queue() -> None:
+                nonlocal next_candidate_to_prepare
+                while len(
+                    candidate_image_futures
+                ) < resize_workers and next_candidate_to_prepare < len(candidates):
+                    index = next_candidate_to_prepare
+                    next_candidate_to_prepare += 1
+                    if not candidate_needs_preparation[index]:
+                        continue
+                    candidate_image_futures[index] = resize_executor.submit(
+                        prepare_image,
+                        Path(candidates[index]["lost_file_path"]),
+                        resize=DEFAULT_IMAGE_RESIZE,
                     )
+
+            fill_candidate_preparation_queue()
+            try:
+                feats0 = extractor.extract_prepared(auction_image_future.result())
+            except torch.cuda.OutOfMemoryError:
+                log_cuda_memory_best_effort(
+                    logger,
+                    context=f"OOM extracting auction image {auction_file_id}",
+                    device=extractor.device,
+                )
+                logger.exception("CUDA OOM; aborting image-matching stage")
+                raise
             except Exception:
-                failed_pairs += 1
-                auction_had_failed_pair = True
+                failed_images += 1
                 logger.exception(
-                    "Pair failed; leaving auction image pending auction_file_id=%s auction_path=%s lost_file_id=%s lost_path=%s",
+                    "Auction image failed; leaving pending auction_file_id=%s path=%s candidates=%d",
                     auction_file_id,
                     auction_file_path,
-                    lost_file_id,
-                    lost_file_path,
+                    len(item["match_candidates"]),
                 )
-            else:
-                if prediction:
-                    found_matches.append(
-                        AcceptedImageMatch(
-                            auction_file_id=auction_file_id,
-                            auction_file_path=str(auction_file_path),
-                            lost_file_id=lost_file_id,
-                            lost_file_path=str(lost_file_path),
-                            confidence=float(confidence),
-                            blocking_score=float(candidate["blocking_score"]),
-                            keypoint_matches=keypoint_matches,
-                        )
-                    )
-            finally:
-                pairs_processed += 1
+                for future in candidate_image_futures.values():
+                    future.cancel()
                 progress.maybe_log(
                     auctions_processed=len(processed_file_ids),
                     pairs_processed=pairs_processed,
@@ -195,39 +217,131 @@ def run_image_matching(
                     failed_images=failed_images,
                     failed_pairs=failed_pairs,
                 )
-        if not auction_had_failed_pair:
-            processed_file_ids.append(auction_file_id)
+                continue
 
-    logger.info("Found %d accepted matches", len(found_matches))
-    _write_results(results_csv, found_matches)
+            auction_had_failed_pair = False
+            for candidate_index, candidate in enumerate(candidates):
+                prepared_image_future = candidate_image_futures.pop(
+                    candidate_index,
+                    None,
+                )
+                fill_candidate_preparation_queue()
+                lost_file_id = candidate["lost_file_id"]
+                lost_file_path = Path(candidate["lost_file_path"])
+                try:
+                    if effective_feats_dir:
+                        feats1_path = (effective_feats_dir / lost_file_id).with_suffix(
+                            ".pt"
+                        )
+                        feats1 = extractor.load_or_extract(
+                            feats1_path,
+                            lost_file_path,
+                            save_missing_feats=save_missing_feats,
+                            prepared_image=(
+                                None
+                                if prepared_image_future is None
+                                else prepared_image_future.result
+                            ),
+                        )
+                    else:
+                        if prepared_image_future is None:
+                            raise RuntimeError(
+                                "Missing prepared image for uncached candidate "
+                                f"{lost_file_id}"
+                            )
+                        feats1 = extractor.extract_prepared(
+                            prepared_image_future.result()
+                        )
+                    matches01 = matcher.match(feats0, feats1)
+                    prediction, confidence = classifier.classify_matches(matches01)
+                    keypoint_matches = None
+                    if prediction:
+                        keypoint_matches = build_keypoint_match_visualization(
+                            feats0,
+                            feats1,
+                            matches01,
+                        )
+                except torch.cuda.OutOfMemoryError:
+                    log_cuda_memory_best_effort(
+                        logger,
+                        context=(
+                            "OOM matching pair "
+                            f"auction_file_id={auction_file_id} "
+                            f"lost_file_id={lost_file_id}"
+                        ),
+                        device=matcher.device,
+                    )
+                    logger.exception("CUDA OOM; aborting image-matching stage")
+                    raise
+                except Exception:
+                    failed_pairs += 1
+                    auction_had_failed_pair = True
+                    logger.exception(
+                        "Pair failed; leaving auction image pending auction_file_id=%s auction_path=%s lost_file_id=%s lost_path=%s",
+                        auction_file_id,
+                        auction_file_path,
+                        lost_file_id,
+                        lost_file_path,
+                    )
+                else:
+                    if prediction:
+                        found_matches.append(
+                            AcceptedImageMatch(
+                                auction_file_id=auction_file_id,
+                                auction_file_path=str(auction_file_path),
+                                lost_file_id=lost_file_id,
+                                lost_file_path=str(lost_file_path),
+                                confidence=float(confidence),
+                                blocking_score=float(candidate["blocking_score"]),
+                                keypoint_matches=keypoint_matches,
+                            )
+                        )
+                finally:
+                    pairs_processed += 1
+                    progress.maybe_log(
+                        auctions_processed=len(processed_file_ids),
+                        pairs_processed=pairs_processed,
+                        matches_found=len(found_matches),
+                        failed_images=failed_images,
+                        failed_pairs=failed_pairs,
+                    )
+            if not auction_had_failed_pair:
+                processed_file_ids.append(auction_file_id)
 
-    elapsed = perf_counter() - run_started_at
-    avg_pair = elapsed / pairs_processed if pairs_processed else None
-    logger.info(
-        "LightGlue matching finished in %s: auctions=%d/%s pairs=%d/%s accepted=%d failed_images=%d failed_pairs=%d avg_pair=%s results=%s",
-        _format_duration(elapsed),
-        len(processed_file_ids),
-        _count_text(summary["auction_file_count"]),
-        pairs_processed,
-        _count_text(summary["row_count"]),
-        len(found_matches),
-        failed_images,
-        failed_pairs,
-        f"{avg_pair:.2f}s" if avg_pair is not None else "n/a",
-        results_path or "disabled",
-    )
+        logger.info("Found %d accepted matches", len(found_matches))
+        _write_results(results_csv, found_matches)
 
-    return ImageMatchingRunResult(
-        processed_auction_file_ids=processed_file_ids,
-        accepted_matches=found_matches,
-        pairs_processed=pairs_processed,
-        failed_images=failed_images,
-        failed_pairs=failed_pairs,
-        lost_content_revision=(
-            None if lost_content_revision is _UNSET_REVISION else lost_content_revision
-        ),
-        auction_content_versions=auction_content_versions,
-    )
+        elapsed = perf_counter() - run_started_at
+        avg_pair = elapsed / pairs_processed if pairs_processed else None
+        logger.info(
+            "LightGlue matching finished in %s: auctions=%d/%s pairs=%d/%s accepted=%d failed_images=%d failed_pairs=%d avg_pair=%s results=%s",
+            _format_duration(elapsed),
+            len(processed_file_ids),
+            _count_text(summary["auction_file_count"]),
+            pairs_processed,
+            _count_text(summary["row_count"]),
+            len(found_matches),
+            failed_images,
+            failed_pairs,
+            f"{avg_pair:.2f}s" if avg_pair is not None else "n/a",
+            results_path or "disabled",
+        )
+
+        return ImageMatchingRunResult(
+            processed_auction_file_ids=processed_file_ids,
+            accepted_matches=found_matches,
+            pairs_processed=pairs_processed,
+            failed_images=failed_images,
+            failed_pairs=failed_pairs,
+            lost_content_revision=(
+                None
+                if lost_content_revision is _UNSET_REVISION
+                else lost_content_revision
+            ),
+            auction_content_versions=auction_content_versions,
+        )
+    finally:
+        resize_executor.shutdown(wait=True, cancel_futures=True)
 
 
 def _require_candidate_content_identity(item: Mapping[str, object]) -> None:
@@ -243,8 +357,10 @@ def _require_candidate_content_identity(item: Mapping[str, object]) -> None:
         )
 
 
-def _candidate_artifact_summary() -> dict[str, int]:
-    logger.info("Loading candidate artifact summary from %s", env_auction_to_lost_rankings_dir())
+def _candidate_artifact_summary() -> RankingArtifactSummary:
+    logger.info(
+        "Loading candidate artifact summary from %s", env_auction_to_lost_rankings_dir()
+    )
     summary = summarize_auction_to_lost_rankings()
     logger.info(
         "Candidate artifact summary: parts=%d rows=%d auction_groups=%d",
@@ -255,7 +371,9 @@ def _candidate_artifact_summary() -> dict[str, int]:
     return summary
 
 
-def _write_results(results_csv: Path | None, found_matches: list[AcceptedImageMatch]) -> None:
+def _write_results(
+    results_csv: Path | None, found_matches: list[AcceptedImageMatch]
+) -> None:
     if results_csv is None:
         logger.info("Result CSV writing disabled")
         return
@@ -270,7 +388,9 @@ def _write_results(results_csv: Path | None, found_matches: list[AcceptedImageMa
 
 
 class _MatchingProgress:
-    def __init__(self, *, total_auctions: int, total_pairs: int, interval_seconds: float) -> None:
+    def __init__(
+        self, *, total_auctions: int, total_pairs: int, interval_seconds: float
+    ) -> None:
         self.total_auctions = total_auctions
         self.total_pairs = total_pairs
         self.interval_seconds = interval_seconds

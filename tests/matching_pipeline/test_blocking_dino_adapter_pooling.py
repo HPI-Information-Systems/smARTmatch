@@ -87,6 +87,101 @@ class PoolingHelperTests(unittest.TestCase):
 
 
 class DinoAdapterConstructionTests(unittest.TestCase):
+    def test_cuda_preflight_uses_cached_parameter_count_before_model_load(self) -> None:
+        metadata = dino_adapter.HfSafetensorsMetadata(
+            model_id="org/dino",
+            requested_revision="main",
+            resolved_revision="resolved-sha",
+            parameter_counts_by_dtype={"F32": 100},
+            total_parameters=100,
+        )
+        snapshot = mock.Mock()
+        with (
+            mock.patch.object(
+                dino_adapter,
+                "get_cached_hf_safetensors_metadata",
+                return_value=metadata,
+            ) as metadata_cache,
+            mock.patch.object(
+                dino_adapter,
+                "log_cuda_memory",
+                return_value=snapshot,
+            ) as memory_log,
+            mock.patch.object(dino_adapter, "require_cuda_memory") as require,
+        ):
+            revision = dino_adapter._preflight_dino_model_metadata(
+                "org/dino",
+                token="secret",
+                runtime_dtype=torch.float16,
+            )
+
+        self.assertEqual(revision, "resolved-sha")
+        metadata_cache.assert_called_once_with("org/dino", token="secret")
+        memory_log.assert_called_once_with(
+            dino_adapter.logger,
+            context="before DINOv3 checkpoint load",
+            device="cuda",
+        )
+        require.assert_called_once_with(
+            snapshot,
+            200,
+            component="DINOv3",
+            basis="allocator_available",
+        )
+
+    def test_cuda_metadata_failure_is_fail_open(self) -> None:
+        with mock.patch.object(
+            dino_adapter,
+            "get_cached_hf_safetensors_metadata",
+            side_effect=OSError("offline"),
+        ), mock.patch.object(
+            dino_adapter, "log_cuda_memory"
+        ) as memory_log, self.assertLogs(
+            dino_adapter.logger, level="WARNING"
+        ):
+            revision = dino_adapter._preflight_dino_model_metadata(
+                "org/dino",
+                token=None,
+                runtime_dtype=torch.bfloat16,
+            )
+
+        self.assertIsNone(revision)
+        memory_log.assert_not_called()
+
+    def test_insufficient_memory_remains_fatal_if_failure_logging_breaks(self) -> None:
+        metadata = dino_adapter.HfSafetensorsMetadata(
+            model_id="org/dino",
+            requested_revision="main",
+            resolved_revision="resolved-sha",
+            parameter_counts_by_dtype={"F32": 100},
+            total_parameters=100,
+        )
+        snapshot = mock.Mock()
+        with (
+            mock.patch.object(
+                dino_adapter,
+                "get_cached_hf_safetensors_metadata",
+                return_value=metadata,
+            ),
+            mock.patch.object(
+                dino_adapter,
+                "log_cuda_memory",
+                side_effect=[snapshot, RuntimeError("logging failed")],
+            ),
+            mock.patch.object(
+                dino_adapter,
+                "require_cuda_memory",
+                side_effect=dino_adapter.InsufficientGpuMemoryError("too small"),
+            ),
+            self.assertLogs(dino_adapter.logger, level="ERROR"),
+            self.assertRaises(dino_adapter.InsufficientGpuMemoryError),
+        ):
+            dino_adapter._preflight_dino_model_metadata(
+                "org/dino",
+                token=None,
+                runtime_dtype=torch.float16,
+            )
+
     def test_model_resolution_uses_only_explicit_or_environment_id(self) -> None:
         adapter = dino_adapter.DinoV3Adapter
         self.assertEqual(adapter._resolve_model_id(" custom/model "), "custom/model")
@@ -159,6 +254,81 @@ class DinoAdapterConstructionTests(unittest.TestCase):
             adapter.model_id, trust_remote_code=True
         )
 
+    def test_insufficient_metadata_preflight_skips_checkpoint_load(self) -> None:
+        with (
+            mock.patch.object(
+                dino_adapter.DinoV3Adapter,
+                "_select_device",
+                return_value="cuda",
+            ),
+            mock.patch.object(dino_adapter, "env_hf_token", return_value=None),
+            mock.patch.object(
+                torch.cuda,
+                "is_bf16_supported",
+                return_value=False,
+            ),
+            mock.patch.object(
+                dino_adapter,
+                "_preflight_dino_model_metadata",
+                side_effect=dino_adapter.InsufficientGpuMemoryError("too small"),
+            ),
+            mock.patch.object(dino_adapter.AutoModel, "from_pretrained") as load_model,
+            self.assertRaises(dino_adapter.InsufficientGpuMemoryError),
+        ):
+            dino_adapter.DinoV3Adapter(
+                model_id="org/dino",
+                use_compile=False,
+            )
+
+        load_model.assert_not_called()
+
+    def test_cuda_metadata_preflight_runs_before_checkpoint_load(self) -> None:
+        events = []
+        model = FakeModel()
+
+        def preflight(*_args, **_kwargs):
+            events.append("preflight")
+            return "resolved-sha"
+
+        def load_model(*_args, **_kwargs):
+            events.append("load")
+            return model
+
+        with (
+            mock.patch.object(
+                dino_adapter.DinoV3Adapter,
+                "_select_device",
+                return_value="cuda",
+            ),
+            mock.patch.object(dino_adapter, "env_hf_token", return_value=None),
+            mock.patch.object(
+                torch.cuda,
+                "is_bf16_supported",
+                return_value=False,
+            ),
+            mock.patch.object(
+                dino_adapter,
+                "_preflight_dino_model_metadata",
+                side_effect=preflight,
+            ),
+            mock.patch.object(
+                dino_adapter.AutoModel,
+                "from_pretrained",
+                side_effect=load_model,
+            ),
+            mock.patch.object(
+                dino_adapter.AutoImageProcessor,
+                "from_pretrained",
+                return_value=mock.Mock(),
+            ),
+        ):
+            dino_adapter.DinoV3Adapter(
+                model_id="org/dino",
+                use_compile=False,
+            )
+
+        self.assertEqual(events, ["preflight", "load"])
+
     def test_init_cuda_token_dtype_compile_and_processor_fallbacks(self) -> None:
         for bf16_supported, expected_dtype in (
             (True, torch.bfloat16),
@@ -183,6 +353,10 @@ class DinoAdapterConstructionTests(unittest.TestCase):
                 ), mock.patch.object(
                     dino_adapter.AutoModel, "from_pretrained", return_value=model
                 ) as load_model, mock.patch.object(
+                    dino_adapter,
+                    "_preflight_dino_model_metadata",
+                    return_value="resolved-sha",
+                ), mock.patch.object(
                     dino_adapter.AutoImageProcessor,
                     "from_pretrained",
                     side_effect=RuntimeError("processor unavailable"),
@@ -203,6 +377,7 @@ class DinoAdapterConstructionTests(unittest.TestCase):
                     trust_remote_code=True,
                     token="secret",
                     torch_dtype=expected_dtype,
+                    revision="resolved-sha",
                 )
                 compile_model.assert_called_once_with(model, mode="reduce-overhead")
                 self.assertIsNone(adapter.processor)
@@ -221,6 +396,10 @@ class DinoAdapterConstructionTests(unittest.TestCase):
             torch.cuda, "is_bf16_supported", return_value=False
         ), mock.patch.object(
             dino_adapter.AutoModel, "from_pretrained", return_value=FakeModel()
+        ), mock.patch.object(
+            dino_adapter,
+            "_preflight_dino_model_metadata",
+            return_value="resolved-sha",
         ), mock.patch.object(
             dino_adapter.AutoImageProcessor,
             "from_pretrained",

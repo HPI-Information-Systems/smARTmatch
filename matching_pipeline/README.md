@@ -31,7 +31,7 @@ The service requires:
 - `HF_TOKEN` access to the configured `DINOV3_MODEL_ID`; and
 - CUDA/NVIDIA Container Toolkit for the default DINOv3 and vLLM profile.
 
-Metadata inference is configured with `METADATA_BACKEND`, `METADATA_MODEL`, `METADATA_QUANTIZATION`, and `METADATA_DEVICE`. For vLLM, `METADATA_GPU_MEMORY_UTILIZATION` sets the fraction of total GPU memory available to each engine and `METADATA_MAX_NUM_SEQS` caps concurrently scheduled sequences. `MATCHING_BATCH_SIZE` limits selected auction artworks/descriptions per cycle.
+Metadata inference is configured with `METADATA_BACKEND`, `METADATA_MODEL`, `METADATA_QUANTIZATION`, and `METADATA_DEVICE`. For vLLM, `METADATA_GPU_MEMORY_UTILIZATION` sets the fraction of total GPU memory available to each engine and `METADATA_MAX_NUM_SEQS` caps concurrently scheduled sequences. The stage checks visible free GPU memory against that requested fraction before importing/loading vLLM. `MATCHING_BATCH_SIZE` limits selected auction artworks/descriptions per cycle. `MATCHING_IMAGE_RESIZE_WORKERS` controls parallel native CPU image decoding/resizing before SuperPoint CUDA transfer.
 
 ```bash
 docker compose up -d --build db matching_pipeline telemetry

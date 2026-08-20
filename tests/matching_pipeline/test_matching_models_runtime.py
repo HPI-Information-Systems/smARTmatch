@@ -33,7 +33,9 @@ def _cached_features(marker: float = 1.0) -> dict:
     }
 
 
-def _cache_test_extractor(max_num_keypoints: int = 2048):
+def _cache_test_extractor(
+    max_num_keypoints: int = models.DEFAULT_MAX_NUM_KEYPOINTS,
+):
     extractor = object.__new__(models.FeatureExtractor)
     extractor.device = "cpu"
     extractor.max_num_keypoints = max_num_keypoints
@@ -57,40 +59,148 @@ class ModelAdapterTests(unittest.TestCase):
             ):
                 self.assertEqual(models._inference_device(), expected)
 
-    def test_feature_extractor_loads_model_and_extracts_image(self) -> None:
+    def test_cuda_model_transfer_runs_memory_preflight(self) -> None:
+        model = mock.Mock()
+        moved = object()
+        model.to.return_value = moved
+        snapshot = mock.Mock()
+        with (
+            mock.patch.object(
+                models,
+                "log_cuda_memory",
+                return_value=snapshot,
+            ) as memory_log,
+            mock.patch.object(
+                models,
+                "module_parameter_buffer_bytes",
+                return_value=123,
+            ),
+            mock.patch.object(models, "require_cuda_memory") as require,
+        ):
+            result = models._move_model_to_device_with_preflight(
+                model,
+                "cuda:0",
+                component="SuperPoint",
+            )
+
+        self.assertIs(result, moved)
+        memory_log.assert_called_once_with(
+            models.logger,
+            context="before SuperPoint model load",
+            device=models.torch.device("cuda:0"),
+        )
+        require.assert_called_once_with(
+            snapshot,
+            123,
+            component="SuperPoint",
+            basis="allocator_available",
+        )
+        model.to.assert_called_once_with("cuda:0")
+
+    def test_failed_model_preflight_relogs_snapshot_at_error(self) -> None:
+        model = mock.Mock()
+        snapshot = mock.Mock()
+        with (
+            mock.patch.object(
+                models,
+                "log_cuda_memory",
+                return_value=snapshot,
+            ) as memory_log,
+            mock.patch.object(
+                models,
+                "module_parameter_buffer_bytes",
+                return_value=123,
+            ),
+            mock.patch.object(
+                models,
+                "require_cuda_memory",
+                side_effect=models.InsufficientGpuMemoryError("low memory"),
+            ),
+            self.assertRaises(models.InsufficientGpuMemoryError),
+        ):
+            models._move_model_to_device_with_preflight(
+                model,
+                "cuda:0",
+                component="LightGlue",
+            )
+
+        self.assertEqual(memory_log.call_count, 2)
+        self.assertEqual(memory_log.call_args.kwargs["level"], models.logging.ERROR)
+        self.assertIs(memory_log.call_args.kwargs["snapshot"], snapshot)
+        model.to.assert_not_called()
+
+    def test_feature_extractor_defaults_to_1024_keypoints(self) -> None:
+        self.assertEqual(models.DEFAULT_MAX_NUM_KEYPOINTS, 1024)
+
+    def test_feature_extractor_loads_model_and_extracts_prepared_image(self) -> None:
         configured = mock.Mock()
         configured.conf = {"max_num_keypoints": 17, "descriptor_dim": 256}
         configured.state_dict.return_value = {
             "weight": models.torch.tensor([1.0, 2.0])
         }
+        configured.to.return_value = configured
+        configured.extract.return_value = {
+            "keypoints": models.torch.tensor([[[1.5, 2.5]]]),
+            "image_size": models.torch.tensor([[4.0, 3.0]]),
+        }
         superpoint = mock.Mock()
-        superpoint.eval.return_value.to.return_value = configured
+        superpoint.eval.return_value = configured
         image = mock.Mock()
         moved_image = object()
         image.to.return_value = moved_image
-        configured.extract.return_value = {"keypoints": "features"}
+        prepared_path = Path(__file__)
+        prepared = models.PreparedImage(
+            path=prepared_path,
+            pixels=np.zeros((3, 4, 3), dtype=np.uint8),
+            original_size=(8, 6),
+            resized_size=(4, 3),
+            source_signature=models._stat_signature(prepared_path.stat()),
+        )
 
         with (
             mock.patch.object(models, "_inference_device", return_value="cpu"),
             mock.patch.object(
                 models, "SuperPoint", return_value=superpoint
             ) as factory,
-            mock.patch.object(models, "load_image", return_value=image),
+            mock.patch.object(
+                models,
+                "numpy_image_to_torch",
+                return_value=image,
+            ),
             mock.patch.object(models, "perf_counter", side_effect=[2.0, 3.5]),
         ):
             extractor = models.FeatureExtractor(max_num_keypoints=17)
-            result = extractor.extract(Path("image.jpg"), resize=None)
+            result = extractor.extract_prepared(prepared)
 
         factory.assert_called_once_with(max_num_keypoints=17)
-        superpoint.eval.return_value.to.assert_called_once_with("cpu")
+        configured.to.assert_called_once_with("cpu")
         image.to.assert_called_once_with("cpu")
         configured.extract.assert_called_once_with(
             moved_image, resize=None, side="long"
         )
-        self.assertEqual(result, {"keypoints": "features"})
+        models.torch.testing.assert_close(
+            result["keypoints"],
+            models.torch.tensor([[[3.5, 5.5]]]),
+        )
+        models.torch.testing.assert_close(
+            result["image_size"],
+            models.torch.tensor([[8.0, 6.0]]),
+        )
         self.assertEqual(extractor.max_num_keypoints, 17)
         self.assertEqual(extractor.model_configuration["descriptor_dim"], 256)
         self.assertEqual(len(extractor.model_fingerprint), 64)
+
+    def test_prepare_image_resizes_on_cpu_before_cuda_transfer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "large.jpg"
+            Image.new("RGB", (16, 8), "red").save(image_path)
+
+            prepared = models.prepare_image(image_path, resize=8)
+
+        self.assertEqual(prepared.original_size, (16, 8))
+        self.assertEqual(prepared.resized_size, (8, 4))
+        self.assertEqual(prepared.pixels.shape, (4, 8, 3))
+        self.assertEqual(prepared.pixels.dtype, np.uint8)
 
     def test_lightglue_loader_accepts_extensionless_jpeg_by_signature(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -109,7 +219,7 @@ class ModelAdapterTests(unittest.TestCase):
         load_error = OSError("unreadable image")
 
         with (
-            mock.patch.object(models, "load_image", side_effect=load_error),
+            mock.patch.object(models, "prepare_image", side_effect=load_error),
             self.assertRaises(OSError) as raised,
         ):
             extractor.extract(Path("broken.jpg"))
@@ -147,7 +257,13 @@ class ModelAdapterTests(unittest.TestCase):
                 weights_only=True,
             )
             metadata = payload["metadata"]
-            self.assertEqual(metadata["cache_schema_version"], 1)
+            self.assertEqual(metadata["cache_schema_version"], 2)
+            self.assertEqual(metadata["extractor"]["resize_backend"], "opencv")
+            self.assertEqual(metadata["extractor"]["resize_interpolation"], "area")
+            self.assertEqual(
+                metadata["extractor"]["coordinate_transform_version"],
+                "pixel-center-v1",
+            )
             self.assertEqual(metadata["source"]["algorithm"], "sha256")
             self.assertEqual(len(metadata["source"]["digest"]), 64)
             self.assertEqual(metadata["source"]["size"], len(b"source image bytes"))
@@ -228,6 +344,55 @@ class ModelAdapterTests(unittest.TestCase):
         )
         self.assertEqual(len(cache_files), 1)
         extractor.extract.assert_not_called()
+
+    def test_cache_preflight_file_error_is_treated_as_cache_miss(self) -> None:
+        extractor = _cache_test_extractor()
+        with mock.patch.object(
+            extractor,
+            "_fingerprint",
+            side_effect=OSError("source temporarily unavailable"),
+        ), self.assertLogs(models.logger, level="WARNING"):
+            available = extractor.has_compatible_feature_cache(
+                Path("cache.pt"),
+                Path("source.jpg"),
+            )
+
+        self.assertFalse(available)
+
+    def test_feature_cache_cuda_oom_is_fatal_not_treated_as_corruption(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cache_path = Path(directory) / "features.pt"
+            cache_path.write_bytes(b"present")
+            with mock.patch.object(
+                models.torch,
+                "load",
+                side_effect=models.torch.cuda.OutOfMemoryError("cache oom"),
+            ), self.assertRaises(models.torch.cuda.OutOfMemoryError):
+                models._load_feature_cache(
+                    cache_path,
+                    expected_metadata={},
+                    device=models.torch.device("cuda:0"),
+                )
+
+    def test_feature_cache_validation_cuda_oom_is_fatal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cache_path = Path(directory) / "features.pt"
+            cache_path.write_bytes(b"present")
+            payload = {"metadata": {}, "features": {}}
+            with (
+                mock.patch.object(models.torch, "load", return_value=payload),
+                mock.patch.object(
+                    models,
+                    "_validate_features",
+                    side_effect=models.torch.cuda.OutOfMemoryError("validate oom"),
+                ),
+                self.assertRaises(models.torch.cuda.OutOfMemoryError),
+            ):
+                models._load_feature_cache(
+                    cache_path,
+                    expected_metadata={},
+                    device=models.torch.device("cuda:0"),
+                )
 
     def test_feature_cache_rejects_loadable_invalid_features(self) -> None:
         extractor = _cache_test_extractor()

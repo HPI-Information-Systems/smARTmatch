@@ -534,14 +534,6 @@
                                  data-keypoint-matches='{{ keypoint_matches|tojson|forceescape }}'
                                  data-lost-image-src="{% if keypoint_lost_image_file_id %}{{ url_for('db_image_file', image_file_id=keypoint_lost_image_file_id) }}{% elif lost_image_files|length > 0 %}{{ image_file_src(lost_image_files[0]) }}{% else %}{{ url_for('db_image_lost', artwork_id=match.lost_artwork.lost_artwork_id) }}{% endif %}"
                                  data-auction-image-src="{% if keypoint_auction_image_file_id %}{{ url_for('db_image_file', image_file_id=keypoint_auction_image_file_id) }}{% elif auction_image_files|length > 0 %}{{ image_file_src(auction_image_files[0]) }}{% else %}{{ url_for('db_image_auction', artwork_id=match.auction_artwork.auction_artwork_id) }}{% endif %}">
-                                <div class="keypoint-canvas-toolbar">
-                                    <span class="keypoint-canvas-legend-item"><i class="keypoint-color-dot keypoint-color-dot-lost"></i>Verlorenes Werk</span>
-                                    <span class="keypoint-canvas-legend-item"><i class="keypoint-color-dot keypoint-color-dot-auction"></i>Auktionswerk</span>
-                                    <span class="keypoint-canvas-legend-item"><i class="keypoint-color-line"></i>Match-Linie</span>
-                                    <span class="badge text-bg-light border keypoint-match-count">
-                                        {{ keypoint_matches.get('match_count', keypoint_matches.get('matches', [])|length) }} Matches
-                                    </span>
-                                </div>
                                 <div class="keypoint-canvas-stage">
                                     <canvas class="keypoint-match-canvas" aria-label="Keypoint-Matches der beiden Bilder"></canvas>
                                     <div class="keypoint-canvas-message" data-keypoint-status>Keypoint-Daten werden geladen…</div>

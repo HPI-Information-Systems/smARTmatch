@@ -16,7 +16,11 @@ from typing import Any, Dict, List, Optional
 
 from matching_pipeline.metadata_extraction.status import EXTRACTION_PARSED_FIELD
 from matching_pipeline.shared.env import get_model_config
-from matching_pipeline.shared.llm_runtime import create_vllm, is_debug_enabled
+from matching_pipeline.shared.llm_runtime import (
+    create_vllm,
+    is_debug_enabled,
+    run_vllm_generation,
+)
 
 logger = logging.getLogger(__name__)
 _PROGRESS_LOG_EVERY = 10
@@ -419,7 +423,6 @@ def _run_vllm(
     max_new_tokens: int,
 ) -> List[str]:
     from transformers import AutoTokenizer
-    from vllm import SamplingParams
 
     llm = create_vllm(
         model=model_name,
@@ -430,6 +433,8 @@ def _run_vllm(
         max_model_len=8192,
         trust_remote_code=True,
     )
+    from vllm import SamplingParams
+
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     sampling_params = SamplingParams(temperature=0.0, max_tokens=max_new_tokens)
 
@@ -442,7 +447,13 @@ def _run_vllm(
         prompts.append(_chat_text_from_messages(tokenizer, messages))
 
     t0 = time.time()
-    outputs = llm.generate(prompts, sampling_params, use_tqdm=is_debug_enabled())
+    outputs = run_vllm_generation(
+        llm,
+        prompts,
+        sampling_params,
+        use_tqdm=is_debug_enabled(),
+        device=device,
+    )
 
     results = []
     n_ok = 0

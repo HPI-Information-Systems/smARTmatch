@@ -20,14 +20,15 @@ sys.modules.setdefault(
 class _FakeFeatureExtractor:
     device = "fake-cpu"
 
-    def extract(self, path: Path) -> dict[str, object]:
-        return {"image_path": str(path), "keypoints": [[10.0, 20.0]]}
+    def extract_prepared(self, prepared) -> dict[str, object]:
+        return {"image_path": str(prepared.path), "keypoints": [[10.0, 20.0]]}
 
     def load_or_extract(
         self,
         feats_path: Path,
         image_path: Path,
         save_missing_feats: bool = True,
+        prepared_image=None,
     ) -> dict[str, object]:
         return {"image_path": str(image_path), "keypoints": [[30.0, 40.0]]}
 
@@ -46,6 +47,13 @@ class _FakeMatchClassifier:
 
 def _load_runner_module():
     fake_models = types.ModuleType("matching_pipeline.image_matching.models")
+    fake_models.DEFAULT_IMAGE_RESIZE = 720
+    fake_models.PreparedImage = object
+    fake_models.configure_parallel_image_resize = lambda: None
+    fake_models.prepare_image = lambda path, *, resize: types.SimpleNamespace(
+        path=Path(path),
+        resize=resize,
+    )
     fake_models.FeatureExtractor = _FakeFeatureExtractor
     fake_models.FeatureMatcher = _FakeFeatureMatcher
     fake_models.MatchClassifier = _FakeMatchClassifier

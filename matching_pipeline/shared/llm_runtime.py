@@ -4,9 +4,18 @@ from __future__ import annotations
 
 import inspect
 import logging
+import math
 import os
 from typing import Any
 
+import torch
+
+from matching_pipeline.shared.gpu_memory import (
+    InsufficientGpuMemoryError,
+    log_cuda_memory,
+    log_cuda_memory_best_effort,
+    require_cuda_memory,
+)
 from shared.logging_adapter import LOG_LEVEL_ENV, LogLevel
 
 _VLLM_IMPLICIT_DEVICE_NAMES = {"", "auto", "cuda"}
@@ -23,6 +32,8 @@ _NOISY_LOGGER_NAMES = (
     "huggingface_hub",
 )
 
+logger = logging.getLogger(__name__)
+
 
 def is_debug_enabled() -> bool:
     """Whether the unified log mode permits verbose vLLM diagnostics."""
@@ -35,13 +46,19 @@ def is_debug_enabled() -> bool:
 def _quiet_vllm_logging() -> None:
     """Suppress vLLM/HTTP-client noise unless unified logging is set to ALL.
 
-    The VLLM_LOGGING_LEVEL env var must be set before `vllm` is imported
-    anywhere in the process, since vLLM reads it once when its logger is
-    first configured. This module is imported by every stage that later does
-    `from vllm import ...`, so setting it here at module load time is early
-    enough. The explicit child-logger levels remain effective after the
+    vLLM normally applies a ``dictConfig`` when imported. Python's dictConfig
+    closes every existing handler, including our daily file handler, even
+    though vLLM leaves that handler attached to the root logger. Keep logging
+    ownership with the entrypoint so vLLM records propagate through the
+    already-configured unified handlers instead.
+
+    These environment variables must be set before `vllm` is imported
+    anywhere in the process. This module is imported by every stage that later
+    does `from vllm import ...`, so setting them here at module load time is
+    early enough. The explicit child-logger levels remain effective after the
     shared adapter configures the root handlers.
     """
+    os.environ.setdefault("VLLM_CONFIGURE_LOGGING", "0")
     if is_debug_enabled():
         return
     os.environ.setdefault("VLLM_LOGGING_LEVEL", "ERROR")
@@ -57,11 +74,39 @@ def _quiet_vllm_logging() -> None:
 _quiet_vllm_logging()
 
 
+def _is_cuda_oom(error: BaseException) -> bool:
+    """Recognize direct and chained CUDA OOM failures by stable exception type."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, torch.cuda.OutOfMemoryError):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _vllm_cuda_device(device: str) -> str:
+    device_name = (device or "").strip().lower()
+    return device_name if device_name.startswith("cuda:") else "cuda"
+
+
+def _log_vllm_oom(error: BaseException, *, context: str, device: str) -> None:
+    if _is_cuda_oom(error):
+        log_cuda_memory_best_effort(
+            logger,
+            context=context,
+            device=_vllm_cuda_device(device),
+        )
+
+
 def _vllm_engine_accepts_arg(name: str) -> bool:
     """Return whether the installed vLLM EngineArgs accepts ``name``."""
     try:
         from vllm.engine.arg_utils import EngineArgs
-    except Exception:
+    except Exception as exc:
+        if _is_cuda_oom(exc):
+            raise
         return False
 
     try:
@@ -88,6 +133,45 @@ def _validate_implicit_vllm_device(device: str) -> None:
     )
 
 
+def _preflight_vllm_gpu_memory(
+    *,
+    device: str,
+    gpu_memory_utilization: float,
+) -> None:
+    device_name = (device or "").strip().lower()
+    if device_name != "cuda" and not device_name.startswith("cuda:"):
+        return
+
+    cuda_device = device_name if device_name.startswith("cuda:") else "cuda"
+    snapshot = log_cuda_memory(
+        logger,
+        context="before vLLM model load",
+        device=cuda_device,
+    )
+    required_bytes = math.ceil(snapshot.total_bytes * gpu_memory_utilization)
+    try:
+        require_cuda_memory(
+            snapshot,
+            required_bytes,
+            component="vLLM",
+            basis="driver_free",
+        )
+    except InsufficientGpuMemoryError:
+        log_cuda_memory(
+            logger,
+            context="failed vLLM memory preflight",
+            level=logging.ERROR,
+            snapshot=snapshot,
+        )
+        raise
+    logger.info(
+        "CUDA memory preflight passed: component=vLLM required=%d bytes "
+        "gpu_memory_utilization=%.2f",
+        required_bytes,
+        gpu_memory_utilization,
+    )
+
+
 def create_vllm(
     *,
     model: str,
@@ -99,19 +183,53 @@ def create_vllm(
     trust_remote_code: bool,
 ) -> Any:
     """Create a vLLM LLM across versions with and without ``device`` support."""
-    from vllm import LLM
+    _preflight_vllm_gpu_memory(
+        device=device,
+        gpu_memory_utilization=gpu_memory_utilization,
+    )
 
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "quantization": quantization,
-        "gpu_memory_utilization": gpu_memory_utilization,
-        "max_num_seqs": max_num_seqs,
-        "max_model_len": max_model_len,
-        "trust_remote_code": trust_remote_code,
-    }
-    if _vllm_engine_accepts_arg("device"):
-        kwargs["device"] = device
-    else:
-        _validate_implicit_vllm_device(device)
+    try:
+        # Keep this import after the preflight. Importing vLLM is expensive and
+        # can initialize CUDA-related state before the model itself is created.
+        from vllm import LLM
 
-    return LLM(**kwargs)
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "quantization": quantization,
+            "gpu_memory_utilization": gpu_memory_utilization,
+            "max_num_seqs": max_num_seqs,
+            "max_model_len": max_model_len,
+            "trust_remote_code": trust_remote_code,
+        }
+        if _vllm_engine_accepts_arg("device"):
+            kwargs["device"] = device
+        else:
+            _validate_implicit_vllm_device(device)
+        return LLM(**kwargs)
+    except Exception as exc:
+        _log_vllm_oom(
+            exc,
+            context="OOM importing or loading vLLM model",
+            device=device,
+        )
+        raise
+
+
+def run_vllm_generation(
+    llm: Any,
+    prompts: Any,
+    sampling_params: Any,
+    *,
+    use_tqdm: bool,
+    device: str,
+) -> Any:
+    """Run one vLLM generation call with fatal, diagnostic OOM handling."""
+    try:
+        return llm.generate(prompts, sampling_params, use_tqdm=use_tqdm)
+    except Exception as exc:
+        _log_vllm_oom(
+            exc,
+            context="OOM during vLLM generation",
+            device=device,
+        )
+        raise

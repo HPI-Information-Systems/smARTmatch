@@ -160,6 +160,7 @@ class PipelineDeploymentTests(unittest.TestCase):
         self.assertIn("METADATA_DEVICE=cuda", development_env)
         self.assertIn("METADATA_GPU_MEMORY_UTILIZATION=0.55", development_env)
         self.assertIn("METADATA_MAX_NUM_SEQS=4", development_env)
+        self.assertIn("MATCHING_IMAGE_RESIZE_WORKERS=4", development_env)
         self.assertIn("SMARTMATCH_LOG_LEVEL=ALL", development_env)
         self.assertIn("SMARTMATCH_LOG_RETENTION_DAYS=30", development_env)
 

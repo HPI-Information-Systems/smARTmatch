@@ -58,7 +58,19 @@ class ImageContentVersionSchemaTests(unittest.TestCase):
         self.assertIn("is_image_matching_processed = false", replay)
         self.assertIn("UPDATE auction_artwork artwork", replay)
 
+    def test_source_hash_migration_leaves_existing_images_unknown(self) -> None:
+        schema = (_ROOT / "db/init-production/01_schema_production.sql").read_text()
+        migration = (
+            _ROOT / "db/init-production/migrations/25_add_image_source_content_hash.sql"
+        ).read_text()
+
+        for sql in (schema, migration):
+            self.assertIn("source_content_sha256", sql)
+            self.assertIn("ck_image_file_source_content_sha256", sql)
+        self.assertNotIn("UPDATE image_file", migration)
+
     def test_generated_model_exposes_content_identity(self) -> None:
+        self.assertIn("source_content_sha256", ImageFile.__table__.columns)
         self.assertIn("content_sha256", ImageFile.__table__.columns)
         self.assertIn("content_version", ImageFile.__table__.columns)
         self.assertFalse(ImageFile.__table__.columns.content_version.nullable)
@@ -70,15 +82,17 @@ class ImageContentVersionSchemaTests(unittest.TestCase):
         interface = (_ROOT / "scrapers/db_interface.py").read_text()
 
         self.assertIn("last_downloaded_image_content_sha256", base)
+        self.assertIn("last_downloaded_image_source_content_sha256", base)
         self.assertIn(
-            "image_content_sha256=self.last_downloaded_image_content_sha256",
+            "image_source_content_sha256=(",
             auction,
         )
         self.assertIn(
-            "image_content_sha256=self.last_downloaded_image_content_sha256",
+            "image_source_content_sha256=(",
             lost,
         )
         self.assertIn("content_sha256 = :content_sha256", interface)
+        self.assertIn("source_content_sha256 = :source_content_sha256", interface)
         self.assertIn("pg_advisory_xact_lock", interface)
 
 

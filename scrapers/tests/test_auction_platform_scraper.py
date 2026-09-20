@@ -55,6 +55,7 @@ class _FakeDB:
         self.commits = 0
         self.existing_artwork = None
         self.image_calls: list[dict[str, object]] = []
+        self.image_files_by_path: dict[str, object] = {}
 
     def _get_session(self):
         return self.session
@@ -73,6 +74,9 @@ class _FakeDB:
 
     def set_auction_artwork_images(self, **kwargs) -> None:
         self.image_calls.append(kwargs)
+
+    def find_image_file_by_path(self, *, file_path: str):
+        return self.image_files_by_path.get(file_path)
 
 
 class _DummyAuctionScraper(AuctionPlatformScraper):
@@ -409,6 +413,7 @@ class AuctionPlatformScraperTests(unittest.TestCase):
                     "auction_artwork_id": artwork_id,
                     "image_paths": [],
                     "image_source_urls": {},
+                    "image_source_content_sha256": {},
                     "image_content_sha256": {},
                     "authoritative": False,
                 }
@@ -441,12 +446,12 @@ class AuctionPlatformScraperTests(unittest.TestCase):
         self.assertFalse(scraper.last_image_download_complete)
         self.assertEqual(scraper.last_downloaded_image_sources, {paths[0]: first_url})
 
-    def test_invalid_hashed_cache_is_replaced_before_becoming_authoritative(
-        self,
-    ) -> None:
-        scraper = _DummyAuctionScraper(db=_FakeDB(), urls=[], download_images=True)
+    def test_valid_cache_reuses_matching_original_source_metadata(self) -> None:
+        db = _FakeDB()
+        scraper = _DummyAuctionScraper(db=db, urls=[], download_images=True)
         artwork_id = UUID("77777777-7777-4777-8777-777777777777")
         image_url = "https://example.org/image.jpg"
+        source_bytes = _png_bytes(width=100, height=100)
 
         with tempfile.TemporaryDirectory() as tmp:
             scraper.images_dir = Path(tmp)
@@ -457,7 +462,7 @@ class AuctionPlatformScraperTests(unittest.TestCase):
 
             with patch(
                 "scrapers.utils.scraper.request_image",
-                return_value=_png_bytes(width=100, height=100),
+                return_value=source_bytes,
             ) as request:
                 paths = scraper.download_lot_images(
                     [image_url], lot_id="LOT-1", artwork_id=artwork_id
@@ -470,6 +475,12 @@ class AuctionPlatformScraperTests(unittest.TestCase):
                 self.assertEqual(saved.format, "JPEG")
                 saved.verify()
 
+            cached_sha256 = hashlib.sha256(cached_path.read_bytes()).hexdigest()
+            db.image_files_by_path[paths[0]] = SimpleNamespace(
+                source_url=image_url,
+                source_content_sha256=hashlib.sha256(source_bytes).hexdigest(),
+                content_sha256=cached_sha256,
+            )
             with patch(
                 "scrapers.utils.scraper.request_image",
                 side_effect=AssertionError("valid cache should be reused"),
@@ -480,8 +491,44 @@ class AuctionPlatformScraperTests(unittest.TestCase):
             self.assertEqual(cached_paths, paths)
             self.assertTrue(scraper.last_image_download_complete)
             self.assertEqual(
+                scraper.last_downloaded_image_sources,
+                {cached_paths[0]: image_url},
+            )
+            self.assertEqual(
                 scraper.last_downloaded_image_content_sha256,
-                {cached_paths[0]: hashlib.sha256(cached_path.read_bytes()).hexdigest()},
+                {cached_paths[0]: cached_sha256},
+            )
+            self.assertEqual(
+                scraper.last_downloaded_image_source_content_sha256,
+                {cached_paths[0]: hashlib.sha256(source_bytes).hexdigest()},
+            )
+
+    def test_valid_cache_does_not_copy_stale_original_source_hash(self) -> None:
+        db = _FakeDB()
+        scraper = _DummyAuctionScraper(db=db, urls=[], download_images=True)
+        artwork_id = UUID("88888888-8888-4888-8888-888888888888")
+        image_url = "https://example.org/image.jpg"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scraper.images_dir = Path(tmp)
+            prefix = safe_image_prefix(scraper.image_prefix, artwork_id)
+            url_hash = hashlib.sha1(image_url.encode("utf-8")).hexdigest()[:10]
+            cached_path = scraper.images_dir / f"{prefix}_0_{url_hash}.jpg"
+            Image.new("RGB", (10, 10), "red").save(cached_path, format="JPEG")
+            db.image_files_by_path[str(cached_path)] = SimpleNamespace(
+                source_url=image_url,
+                source_content_sha256="a" * 64,
+                content_sha256="b" * 64,
+            )
+
+            paths = scraper.download_lot_images(
+                [image_url], lot_id="LOT-1", artwork_id=artwork_id
+            )
+
+            self.assertEqual(paths, [str(cached_path)])
+            self.assertEqual(
+                scraper.last_downloaded_image_source_content_sha256,
+                {},
             )
 
     def test_atomic_image_write_removes_temporary_file_after_failure(self) -> None:
@@ -515,9 +562,10 @@ class AuctionPlatformScraperTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             scraper.images_dir = Path(tmp)
+            source_bytes = _png_bytes(width=4000, height=1000)
             with patch(
                 "scrapers.utils.scraper.request_image",
-                return_value=_png_bytes(width=4000, height=1000),
+                return_value=source_bytes,
             ):
                 paths = scraper.download_lot_images(
                     ["https://example.org/a.jpg"],
@@ -530,6 +578,10 @@ class AuctionPlatformScraperTests(unittest.TestCase):
             self.assertEqual(
                 scraper.last_downloaded_image_sources,
                 {paths[0]: "https://example.org/a.jpg"},
+            )
+            self.assertEqual(
+                scraper.last_downloaded_image_source_content_sha256,
+                {paths[0]: hashlib.sha256(source_bytes).hexdigest()},
             )
             saved_path = Path(paths[0])
             self.assertEqual(

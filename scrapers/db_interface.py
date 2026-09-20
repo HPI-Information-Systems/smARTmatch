@@ -53,7 +53,9 @@ def _normalize_content_sha256(value: str | None) -> str | None:
     if value is None:
         return None
     digest = str(value).strip().lower()
-    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+    if len(digest) != 64 or any(
+        character not in "0123456789abcdef" for character in digest
+    ):
         raise ValueError("content_sha256 must be a 64-character hexadecimal digest")
     return digest
 
@@ -795,6 +797,17 @@ class Database:
 
         return normalized
 
+    def find_image_file_by_path(self, *, file_path: str) -> Optional[ImageFile]:
+        """Return persisted metadata for an existing cached image path."""
+
+        session = self._get_session()
+        return session.execute(
+            select(ImageFile)
+            .where(ImageFile.file_path == file_path)
+            .order_by(ImageFile.image_file_id)
+            .limit(1)
+        ).scalar_one_or_none()
+
     def _image_file_id_by_path(self, *, file_path: str) -> object | None:
         session = self._get_session()
         return session.execute(
@@ -815,13 +828,18 @@ class Database:
         *,
         file_path: str,
         source_url: str | None = None,
+        source_content_sha256: str | None = None,
         content_sha256: str | None = None,
     ) -> object | None:
         session = self._get_session()
         has_source_url = self._table_has_columns("image_file", {"source_url"})
+        has_source_content_sha256 = self._table_has_columns(
+            "image_file", {"source_content_sha256"}
+        )
         has_content_version = self._table_has_columns(
             "image_file", {"content_sha256", "content_version"}
         )
+        normalized_source_digest = _normalize_content_sha256(source_content_sha256)
         normalized_digest = _normalize_content_sha256(content_sha256)
         if has_content_version and normalized_digest is not None:
             # Serialize cooperating scraper writers for this stable path until
@@ -887,64 +905,48 @@ class Database:
                     ),
                     {"source_url": source_url, "image_file_id": existing_id},
                 )
+            if has_source_content_sha256 and normalized_source_digest is not None:
+                session.execute(
+                    text(
+                        """
+                        update image_file
+                        set source_content_sha256 = :source_content_sha256
+                        where image_file_id = :image_file_id
+                          and source_content_sha256 is distinct from
+                              :source_content_sha256
+                        """
+                    ),
+                    {
+                        "source_content_sha256": normalized_source_digest,
+                        "image_file_id": existing_id,
+                    },
+                )
             return existing_id
 
         savepoint_ctx, has_savepoint = self._savepoint_context(session)
         try:
             with savepoint_ctx:
-                if has_content_version:
-                    if has_source_url:
-                        return session.execute(
-                            text(
-                                """
-                                insert into image_file (
-                                    file_path, source_url, content_sha256
-                                )
-                                values (
-                                    :file_path, :source_url, :content_sha256
-                                )
-                                returning image_file_id
-                                """
-                            ),
-                            {
-                                "file_path": file_path,
-                                "source_url": source_url,
-                                "content_sha256": normalized_digest,
-                            },
-                        ).scalar_one()
-                    return session.execute(
-                        text(
-                            """
-                            insert into image_file (file_path, content_sha256)
-                            values (:file_path, :content_sha256)
-                            returning image_file_id
-                            """
-                        ),
-                        {
-                            "file_path": file_path,
-                            "content_sha256": normalized_digest,
-                        },
-                    ).scalar_one()
+                columns = ["file_path"]
+                parameters: dict[str, object | None] = {"file_path": file_path}
                 if has_source_url:
-                    return session.execute(
-                        text(
-                            """
-                            insert into image_file (file_path, source_url)
-                            values (:file_path, :source_url)
-                            returning image_file_id
-                            """
-                        ),
-                        {"file_path": file_path, "source_url": source_url},
-                    ).scalar_one()
+                    columns.append("source_url")
+                    parameters["source_url"] = source_url
+                if has_source_content_sha256:
+                    columns.append("source_content_sha256")
+                    parameters["source_content_sha256"] = normalized_source_digest
+                if has_content_version:
+                    columns.append("content_sha256")
+                    parameters["content_sha256"] = normalized_digest
+                placeholders = [f":{column}" for column in columns]
                 return session.execute(
                     text(
-                        """
-                        insert into image_file (file_path)
-                        values (:file_path)
-                        returning image_file_id
-                        """
+                        "insert into image_file ("
+                        + ", ".join(columns)
+                        + ") values ("
+                        + ", ".join(placeholders)
+                        + ") returning image_file_id"
                     ),
-                    {"file_path": file_path},
+                    parameters,
                 ).scalar_one()
         except IntegrityError:
             if not has_savepoint:
@@ -953,10 +955,15 @@ class Database:
         existing_id = self._image_file_id_by_path(file_path=file_path)
         if existing_id is None:
             return None
-        if source_url or normalized_digest is not None:
+        if (
+            source_url
+            or normalized_source_digest is not None
+            or normalized_digest is not None
+        ):
             return self._ensure_image_file_id(
                 file_path=file_path,
                 source_url=source_url,
+                source_content_sha256=normalized_source_digest,
                 content_sha256=normalized_digest,
             )
         return existing_id
@@ -1033,6 +1040,7 @@ class Database:
         auction_artwork_id: UUID | object,
         image_paths: Sequence[str] | None,
         image_source_urls: Mapping[str, str] | None = None,
+        image_source_content_sha256: Mapping[str, str] | None = None,
         image_content_sha256: Mapping[str, str] | None = None,
         authoritative: bool = True,
     ) -> None:
@@ -1093,6 +1101,9 @@ class Database:
             image_file_id = self._ensure_image_file_id(
                 file_path=image_path,
                 source_url=(image_source_urls or {}).get(image_path),
+                source_content_sha256=(image_source_content_sha256 or {}).get(
+                    image_path
+                ),
                 content_sha256=(image_content_sha256 or {}).get(image_path),
             )
             if image_file_id is None or image_file_id in desired_set:
@@ -1187,6 +1198,7 @@ class Database:
         lost_artwork_id: UUID | object,
         image_paths: Sequence[str] | None,
         image_source_urls: Mapping[str, str] | None = None,
+        image_source_content_sha256: Mapping[str, str] | None = None,
         image_content_sha256: Mapping[str, str] | None = None,
     ) -> None:
         session = self._get_session()
@@ -1224,6 +1236,9 @@ class Database:
             image_file_id = self._ensure_image_file_id(
                 file_path=image_path,
                 source_url=(image_source_urls or {}).get(image_path),
+                source_content_sha256=(image_source_content_sha256 or {}).get(
+                    image_path
+                ),
                 content_sha256=(image_content_sha256 or {}).get(image_path),
             )
             if image_file_id is None or image_file_id in desired_set:

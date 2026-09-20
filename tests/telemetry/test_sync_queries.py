@@ -39,6 +39,32 @@ class SyncQueryTests(unittest.TestCase):
         self.assertNotIn("lost_id::text ||", statement)
         self.assertEqual(parameters, ([UUID(lost_id)], [UUID(auction_id)]))
 
+    def test_image_rows_transmit_only_source_content_hash(self) -> None:
+        connection, cursor = self._connection()
+        cursor.fetchall.return_value = [
+            (
+                "7",
+                {
+                    "image_file_id": 7,
+                    "source_content_sha256": "a" * 64,
+                },
+            )
+        ]
+
+        rows = sync._fetch_integer_entities(connection, {7})
+
+        self.assertEqual(
+            rows,
+            {
+                "7": {
+                    "image_file_id": 7,
+                    "source_content_sha256": "a" * 64,
+                }
+            },
+        )
+        statement = cursor.execute.call_args.args[0]
+        self.assertIn("to_jsonb(row_data) - 'content_sha256'", statement)
+
     def test_entity_and_link_predicates_keep_uuid_columns_typed(self) -> None:
         entity_connection, entity_cursor = self._connection()
         entity_id = "10000000-0000-4000-8000-000000000001"
@@ -148,5 +174,8 @@ class SyncQueryResourceLimitTests(unittest.TestCase):
 
                 self.assertEqual(cursor.execute.call_count, 1)
                 statement = cursor.execute.call_args.args[0]
-                self.assertIn("SUM(octet_length(to_jsonb", statement)
+                if name == "images":
+                    self.assertIn("to_jsonb(row_data) - 'content_sha256'", statement)
+                else:
+                    self.assertIn("SUM(octet_length(to_jsonb", statement)
                 cursor.fetchall.assert_not_called()

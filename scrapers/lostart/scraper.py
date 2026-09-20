@@ -315,6 +315,9 @@ class LostArtScraper(Scraper):
             literature_source_id = literature.literature_id
 
         img_paths: list[str] = []
+        self.last_downloaded_image_sources = {}
+        self.last_downloaded_image_source_content_sha256 = {}
+        self.last_downloaded_image_content_sha256 = {}
         if self.download_images_enabled:
             try:
                 image_urls = lostart_image_scraper.fetch_gallery_sources(record.url)
@@ -351,6 +354,9 @@ class LostArtScraper(Scraper):
             lost_artwork_id=artwork.lost_artwork_id,
             image_paths=img_paths,
             image_source_urls=self.last_downloaded_image_sources,
+            image_source_content_sha256=(
+                self.last_downloaded_image_source_content_sha256
+            ),
             image_content_sha256=self.last_downloaded_image_content_sha256,
         )
 

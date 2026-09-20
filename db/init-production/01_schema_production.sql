@@ -100,10 +100,15 @@ CREATE TABLE IF NOT EXISTS image_file (
     image_file_id serial PRIMARY KEY,
     file_path text UNIQUE,
     source_url text,
+    source_content_sha256 varchar(64),
     content_sha256 varchar(64),
     content_version bigint NOT NULL DEFAULT 1,
     is_embedded boolean NOT NULL DEFAULT false,
     cleaned_up_at timestamptz,
+    CONSTRAINT ck_image_file_source_content_sha256 CHECK (
+        source_content_sha256 IS NULL
+        OR source_content_sha256 ~ '^[0-9a-f]{64}$'
+    ),
     CONSTRAINT ck_image_file_content_sha256 CHECK (
         content_sha256 IS NULL OR content_sha256 ~ '^[0-9a-f]{64}$'
     ),

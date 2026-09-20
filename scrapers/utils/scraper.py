@@ -97,6 +97,7 @@ class Scraper(ABC):
         self.stats: dict = {"urls_total": 0, "urls_processed": 0}
         self.log_prefix = log_prefix
         self.last_downloaded_image_sources: dict[str, str] = {}
+        self.last_downloaded_image_source_content_sha256: dict[str, str] = {}
         self.last_downloaded_image_content_sha256: dict[str, str] = {}
         self.last_image_download_complete = True
         # Optional observers set by the orchestrator. The pre-commit fence
@@ -238,6 +239,7 @@ class Scraper(ABC):
 
         local_paths: list[str] = []
         self.last_downloaded_image_sources = {}
+        self.last_downloaded_image_source_content_sha256 = {}
         self.last_downloaded_image_content_sha256 = {}
         self.last_image_download_complete = True
         # de-duplicate while preserving order
@@ -259,11 +261,33 @@ class Scraper(ABC):
                 filepath = dest / filename
                 if filepath.exists() and _is_valid_cached_jpeg(filepath):
                     relative_path = _relative_path(filepath)
+                    cached_content_sha256 = _sha256_file(filepath)
                     local_paths.append(relative_path)
                     self.last_downloaded_image_sources[relative_path] = url
                     self.last_downloaded_image_content_sha256[relative_path] = (
-                        _sha256_file(filepath)
+                        cached_content_sha256
                     )
+                    original = self.db.find_image_file_by_path(file_path=relative_path)
+                    if original is not None:
+                        original_url = getattr(original, "source_url", None)
+                        original_source_sha256 = getattr(
+                            original, "source_content_sha256", None
+                        )
+                        original_content_sha256 = getattr(
+                            original, "content_sha256", None
+                        )
+                        if (
+                            original_source_sha256
+                            and original_content_sha256 == cached_content_sha256
+                            and (not original_url or original_url == url)
+                        ):
+                            if original_url:
+                                self.last_downloaded_image_sources[relative_path] = (
+                                    original_url
+                                )
+                            self.last_downloaded_image_source_content_sha256[
+                                relative_path
+                            ] = original_source_sha256
                     continue
                 if filepath.exists():
                     self.log(f"[retry] invalid cached image {filepath}")
@@ -275,6 +299,7 @@ class Scraper(ABC):
                     self.log(f"[skip] image {url}")
                     continue
 
+                source_content_sha256 = hashlib.sha256(content).hexdigest()
                 jpeg_bytes = _to_jpeg_bytes(content)
                 if jpeg_bytes is None:
                     self.last_image_download_complete = False
@@ -285,6 +310,9 @@ class Scraper(ABC):
                 relative_path = _relative_path(filepath)
                 local_paths.append(relative_path)
                 self.last_downloaded_image_sources[relative_path] = url
+                self.last_downloaded_image_source_content_sha256[relative_path] = (
+                    source_content_sha256
+                )
                 self.last_downloaded_image_content_sha256[relative_path] = (
                     hashlib.sha256(jpeg_bytes).hexdigest()
                 )

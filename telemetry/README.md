@@ -16,12 +16,12 @@ Requested data pages can contain:
 
 - complete `match_score`, `lost_artwork`, and `auction_artwork` rows;
 - referenced artists, locations, institutions, literature, auction parties, and matching programs;
-- image-file metadata and artwork/image link rows, including available `source_url` values;
+- image-file metadata and artwork/image link rows, including available `source_url` and raw-response `source_content_sha256` values; the sender-local processed-file `content_sha256` is excluded;
 - aggregate database counts, deterministic dataset hashes, and the latest successfully applied migration ledger entry;
 - baked build Git identity and copied-source hash, pinned dependency versions from component requirement locks, and matching artifact hashes;
 - image-tree metadata based on relative paths and file sizes.
 
-The sender does not transmit image bytes, GPU embeddings, feature caches, model files, database credentials, or the telemetry bearer token. Image files are stat-ed but not opened for telemetry hashing, and the Compose service mounts `db/images` read-only.
+The sender does not transmit image bytes, GPU embeddings, feature caches, model files, database credentials, or the telemetry bearer token. Image files are stat-ed but not opened for telemetry hashing, and the Compose service mounts `db/images` read-only. Image download validation uses only the raw-response digest captured by the scraper; processed local file digests remain sender-local.
 
 ## Package layout
 

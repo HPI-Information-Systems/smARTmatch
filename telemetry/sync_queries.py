@@ -148,7 +148,9 @@ def _fetch_integer_entities(
             conn,
             """
             SELECT
-                COALESCE(SUM(octet_length(to_jsonb(row_data)::text)), 0),
+                COALESCE(SUM(octet_length(
+                    (to_jsonb(row_data) - 'content_sha256')::text
+                )), 0),
                 COUNT(*)
             FROM image_file row_data
             WHERE image_file_id = ANY(%s)
@@ -160,7 +162,8 @@ def _fetch_integer_entities(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT image_file_id::text, to_jsonb(row_data)
+            SELECT image_file_id::text,
+                   to_jsonb(row_data) - 'content_sha256'
             FROM image_file row_data
             WHERE image_file_id = ANY(%s)
             ORDER BY image_file_id

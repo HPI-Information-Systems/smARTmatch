@@ -266,6 +266,25 @@ class DatabaseCaseInsensitiveLookupTests(unittest.TestCase):
 
 
 class DatabaseAuctionArtworkTests(unittest.TestCase):
+    def test_find_image_file_by_path_returns_persisted_metadata(self) -> None:
+        db = Database.__new__(Database)
+        existing = object()
+        statements: list[str] = []
+
+        class FakeSession:
+            def execute(self, stmt):
+                statements.append(str(stmt))
+                return _ExistingResult(existing)
+
+        db._get_session = lambda: FakeSession()  # type: ignore[attr-defined]
+
+        result = Database.find_image_file_by_path(db, file_path="images/cached.jpg")
+
+        self.assertIs(result, existing)
+        self.assertEqual(len(statements), 1)
+        self.assertIn("image_file.file_path", statements[0])
+        self.assertIn("ORDER BY image_file.image_file_id", statements[0])
+
     def test_content_digest_validation_and_existing_row_update(self) -> None:
         digest = "A" * 64
         self.assertEqual(_normalize_content_sha256(digest), digest.lower())
@@ -292,11 +311,12 @@ class DatabaseAuctionArtworkTests(unittest.TestCase):
                 db,
                 file_path="image.jpg",
                 source_url="https://example.org/image.jpg",
+                source_content_sha256="c" * 64,
                 content_sha256=digest,
             )
 
         self.assertEqual(result, 17)
-        self.assertEqual(len(executed), 2)
+        self.assertEqual(len(executed), 3)
         advisory_sql, advisory_params = executed[0]
         self.assertIn("pg_advisory_xact_lock", advisory_sql)
         self.assertEqual(advisory_params, {"file_path": "image.jpg"})
@@ -308,6 +328,15 @@ class DatabaseAuctionArtworkTests(unittest.TestCase):
             {
                 "source_url": "https://example.org/image.jpg",
                 "content_sha256": "b" * 64,
+                "image_file_id": 17,
+            },
+        )
+        source_sql, source_params = executed[2]
+        self.assertIn("source_content_sha256 = :source_content_sha256", source_sql)
+        self.assertEqual(
+            source_params,
+            {
+                "source_content_sha256": "c" * 64,
                 "image_file_id": 17,
             },
         )

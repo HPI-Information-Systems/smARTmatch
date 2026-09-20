@@ -354,6 +354,7 @@ class ImageFile(Base):
     image_file_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     file_path: Mapped[Optional[str]] = mapped_column(Text, unique=True)
     source_url: Mapped[Optional[str]] = mapped_column(Text)
+    source_content_sha256: Mapped[Optional[str]] = mapped_column(String(64))
     content_sha256: Mapped[Optional[str]] = mapped_column(String(64))
     content_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
     is_embedded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

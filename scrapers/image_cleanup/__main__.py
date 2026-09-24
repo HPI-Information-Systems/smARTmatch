@@ -7,13 +7,13 @@ import logging
 from pathlib import Path
 from typing import Sequence
 
-from matching_pipeline.image_cleanup.cleanup import (
+from scrapers.image_cleanup.cleanup import (
     CleanupAlreadyRunning,
     CleanupBlockedByActiveScraper,
     CleanupBlockedByImageWriter,
     cleanup_unmatched_auction_images,
 )
-from matching_pipeline.shared.env import env_image_root
+from scrapers.image_cleanup.db import image_root_from_env
 from shared.logging_adapter import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     configure_logging()
     args = build_parser().parse_args(argv)
-    image_root = args.images_dir or env_image_root()
+    image_root = args.images_dir or image_root_from_env()
     try:
         result = cleanup_unmatched_auction_images(
             image_root=image_root,

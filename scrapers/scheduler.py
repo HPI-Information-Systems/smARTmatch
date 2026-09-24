@@ -92,6 +92,32 @@ def next_trigger_after(previous: float, interval: float, now: float) -> float:
     return next_trigger
 
 
+def run_interval_cleanup() -> None:
+    """Delete eligible images before this interval's scrapers take the store lock.
+
+    A previous batch that is still running holds that lock. Cleanup then exits
+    without deleting anything, and this interval continues straight to scraping.
+    """
+
+    logger.info("interval cleanup starting")
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-m", "scrapers.image_cleanup", "--apply"],
+            cwd=str(_REPO_ROOT),
+            check=False,
+        )
+    except OSError:
+        logger.exception("interval cleanup could not start; continuing with scrapers")
+        return
+    if completed.returncode != 0:
+        logger.error(
+            "interval cleanup exit_code=%s; continuing with scrapers",
+            completed.returncode,
+        )
+        return
+    logger.info("interval cleanup finished")
+
+
 def _submit_batch(manager: BatchProcessManager, source: str) -> None:
     try:
         manager.launch(source)
@@ -105,6 +131,7 @@ def run_scheduler(
     *,
     manager: BatchProcessManager | None = None,
     monotonic: Callable[[], float] = time.monotonic,
+    cleanup: Callable[[], None] = run_interval_cleanup,
 ) -> int:
     """Run immediately, then submit a fresh batch at every interval."""
     process_manager = manager or BatchProcessManager()
@@ -118,10 +145,15 @@ def run_scheduler(
         process_manager.reap_finished()
         now = monotonic()
         if now >= next_trigger:
-            _submit_batch(
-                process_manager,
-                "startup" if first_trigger else "scheduled",
-            )
+            source = "startup" if first_trigger else "scheduled"
+            try:
+                cleanup()
+            except Exception:
+                logger.exception(
+                    "source=%s interval cleanup failed; continuing with scrapers",
+                    source,
+                )
+            _submit_batch(process_manager, source)
             first_trigger = False
             next_trigger = next_trigger_after(
                 next_trigger,

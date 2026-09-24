@@ -18,13 +18,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from matching_pipeline.shared.db import connect_db
-from matching_pipeline.shared.env import env_repo_root
+from scrapers.image_cleanup.db import connect_db
 from shared.image_storage_lock import (
     ImageStorageLockBusy,
     image_storage_lock,
     image_storage_lock_path,
 )
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +106,57 @@ FROM image_file img
 WHERE img.cleaned_up_at IS NULL
   AND img.file_path IS NOT NULL
 ORDER BY img.image_file_id
+"""
+
+# Cheap existence check. The full inventory below also loads every live file so
+# resolved-path aliases can be protected; that filesystem walk is pointless
+# when the database already knows there is nothing to delete.
+_CANDIDATE_PREFLIGHT_SQL = """
+-- cleanup_candidate_preflight
+WITH eligible_artwork AS (
+    SELECT aa.auction_artwork_id
+    FROM auction_artwork aa
+    WHERE aa.is_image_matching_processed = true
+      AND aa.is_metadata_extraction_processed = true
+      AND aa.is_metadata_matching_processed = true
+      AND EXISTS (
+          SELECT 1
+          FROM auction_artwork_image_file linked
+          WHERE linked.auction_artwork_id = aa.auction_artwork_id
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM auction_artwork_image_file pending
+          WHERE pending.auction_artwork_id = aa.auction_artwork_id
+            AND (
+                pending.is_image_matching_processed = false
+                OR pending.is_image_matching_completed_without_error = false
+            )
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM auction_artwork_image_file linked
+          JOIN image_file linked_image
+            ON linked_image.image_file_id = linked.image_file_id
+          WHERE linked.auction_artwork_id = aa.auction_artwork_id
+            AND linked_image.is_embedded = false
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM match_score score
+          WHERE score.auction_id = aa.auction_artwork_id
+      )
+)
+SELECT EXISTS (
+    SELECT 1
+    FROM eligible_artwork eligible
+    JOIN auction_artwork_image_file candidate_link
+      ON candidate_link.auction_artwork_id = eligible.auction_artwork_id
+    JOIN image_file img
+      ON img.image_file_id = candidate_link.image_file_id
+    WHERE img.cleaned_up_at IS NULL
+      AND img.file_path IS NOT NULL
+)
 """
 
 
@@ -200,14 +254,17 @@ class _CleanupInventoryOutcome:
 def cleanup_unmatched_auction_images(*, image_root: Path, apply: bool) -> CleanupResult:
     """Inspect or delete eligible files while holding a stable DB snapshot.
 
-    Apply mode takes table-level locks before selecting candidates. Those locks
-    prevent processing flags, match scores, and image associations from changing
-    until filesystem quarantine moves and their cleanup markers commit.
+    Apply mode takes the exclusive image-store lock before any directory listing
+    or database inventory. Table locks then freeze processing flags, match
+    scores, and image associations until filesystem quarantine moves and their
+    cleanup markers commit. A database preflight skips the filesystem walk when
+    no live eligible file exists.
     """
 
-    root = _validated_image_root(image_root, apply=apply)
+    root = _configured_image_root(image_root)
     if not apply:
         return _cleanup_with_storage_locked(root=root, apply=False)
+    _require_initialized_image_root(root)
     try:
         with image_storage_lock(
             root,
@@ -220,7 +277,7 @@ def cleanup_unmatched_auction_images(*, image_root: Path, apply: bool) -> Cleanu
         raise CleanupBlockedByImageWriter(str(exc)) from exc
 
 
-def _validated_image_root(image_root: Path, *, apply: bool) -> Path:
+def _configured_image_root(image_root: Path) -> Path:
     root = Path(image_root).expanduser().resolve()
     configured_value = (os.getenv("SMARTMATCH_IMAGES_DIR") or "").strip()
     if configured_value:
@@ -230,16 +287,28 @@ def _validated_image_root(image_root: Path, *, apply: bool) -> Path:
                 "cleanup image root must equal SMARTMATCH_IMAGES_DIR: "
                 f"requested={root} configured={configured}"
             )
-    if apply:
-        if not root.is_dir():
-            raise FileNotFoundError(f"image storage root does not exist: {root}")
-        lock_path = image_storage_lock_path(root)
-        if not lock_path.is_file() and not any(root.iterdir()):
-            raise RuntimeError(
-                "image storage root is empty and has no coordination marker; "
-                "refusing to mark database paths missing"
-            )
     return root
+
+
+def _require_initialized_image_root(root: Path) -> None:
+    """Reject a missing or untouched image root before taking the cleanup lock.
+
+    Existence is a single stat. The empty-directory listing runs only when the
+    coordination file is absent, so a writer that already holds the lock never
+    pays for a walk of the image store.
+    """
+
+    if not root.is_dir():
+        raise FileNotFoundError(f"image storage root does not exist: {root}")
+    lock_path = image_storage_lock_path(root)
+    if lock_path.is_file():
+        return
+    if any(root.iterdir()):
+        return
+    raise RuntimeError(
+        "image storage root is empty and has no coordination marker; "
+        "refusing to mark database paths missing"
+    )
 
 
 def _cleanup_with_storage_locked(*, root: Path, apply: bool) -> CleanupResult:
@@ -257,11 +326,18 @@ def _cleanup_with_storage_locked(*, root: Path, apply: bool) -> CleanupResult:
             else:
                 cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                 cur.execute("SET LOCAL statement_timeout = '15min'")
+            if not _has_live_cleanup_candidate(cur):
+                logger.info(
+                    "Auction image cleanup skipped filesystem inventory: "
+                    "no live eligible image file"
+                )
+                conn.rollback()
+                return _empty_cleanup_result(apply=apply)
             usages = _fetch_inventory(cur)
             outcome = _cleanup_inventory(
                 usages,
                 image_root=root,
-                repo_root=env_repo_root().resolve(),
+                repo_root=_repo_root(),
                 apply=apply,
             )
             result = outcome.result
@@ -366,6 +442,29 @@ def _lock_cleanup_snapshot(cur) -> None:
             auction_artwork
         IN SHARE MODE
         """
+    )
+
+
+def _has_live_cleanup_candidate(cur) -> bool:
+    cur.execute(_CANDIDATE_PREFLIGHT_SQL)
+    return bool(cur.fetchone()[0])
+
+
+def _empty_cleanup_result(*, apply: bool) -> CleanupResult:
+    return CleanupResult(
+        apply=apply,
+        inventory_row_count=0,
+        candidate_image_row_count=0,
+        candidate_target_count=0,
+        protected_target_count=0,
+        would_delete_target_count=0,
+        deleted_target_count=0,
+        missing_target_count=0,
+        unsafe_target_count=0,
+        failed_target_count=0,
+        byte_count=0,
+        cleaned_image_file_ids=(),
+        errors=(),
     )
 
 
@@ -1138,7 +1237,7 @@ def _recover_quarantine(cur, root: Path) -> None:
                     cur,
                     quarantined,
                     image_root=root,
-                    repo_root=env_repo_root().resolve(),
+                    repo_root=_repo_root(),
                 ):
                     _purge_quarantined_file(quarantine_fd, quarantined)
                 else:

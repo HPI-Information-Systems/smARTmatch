@@ -23,7 +23,7 @@ docker compose ps scrapers
 docker compose logs -f --tail=200 scrapers
 ```
 
-The scheduler submits a batch immediately at startup and then at `SCRAPER_INTERVAL`. Changing environment configuration requires recreating the service: `docker compose up -d --force-recreate scrapers`.
+The scheduler submits a batch immediately at startup and then at `SCRAPER_INTERVAL`. Each of those triggers first runs auction-image cleanup. Cleanup skips that interval when any scraper still holds the image-store lock, and the batch starts either way. Changing environment configuration requires recreating the service: `docker compose up -d --force-recreate scrapers`.
 
 ## Operation
 

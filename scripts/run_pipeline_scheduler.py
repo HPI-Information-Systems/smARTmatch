@@ -71,12 +71,6 @@ PIPELINE_STEPS = (
         (sys.executable, "-m", "matching_pipeline.metadata_matching"),
         _APP_ROOT,
     ),
-    PipelineStep(
-        "image-cleanup",
-        "unmatched auction image cleanup",
-        (sys.executable, "-m", "matching_pipeline.image_cleanup", "--apply"),
-        _APP_ROOT,
-    ),
 )
 
 

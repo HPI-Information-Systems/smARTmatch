@@ -289,7 +289,7 @@ class DailyContainerFileHandler(logging.Handler):
                 continue
             try:
                 file_date = date.fromisoformat(match.group(1))
-                path_stat = path.stat(follow_symlinks=False)
+                path_stat = os.lstat(path)
             except (OSError, ValueError):
                 continue
             if file_date >= cutoff or not stat.S_ISREG(path_stat.st_mode):

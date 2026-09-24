@@ -23,15 +23,13 @@ Do not manually move or remove quarantine files. If reconciliation reports an am
 Preview without deleting:
 
 ```bash
-python -m matching_pipeline.image_cleanup
+python -m scrapers.image_cleanup
 ```
 
 Apply deletion:
 
 ```bash
-python -m matching_pipeline.image_cleanup --apply
+python -m scrapers.image_cleanup --apply
 ```
 
-The combined scheduler runs apply mode after metadata matching. Stop the scheduler before a manual apply run. Back up PostgreSQL and the image directory together before the first deployment.
-
-Apply migrations `20_track_error_free_image_matching.sql` and `21_mark_cleaned_up_image_files.sql` before enabling cleanup. They add the error-free completion marker, reset historical scoreless auction images for one corrected matching pass, make `file_path` nullable, and add `cleaned_up_at`. Cleanup fails closed if either migration is absent. New image-matching failures remain pending and are not cleanup-eligible.
+The scraper scheduler runs apply mode at the start of each `SCRAPER_INTERVAL` batch, before the providers take the image-store lock. If a previous provider is still running, cleanup skips that interval and the new batch starts anyway. Stop the scraper scheduler before a manual apply run. Back up PostgreSQL and the image directory together before the first deployment.

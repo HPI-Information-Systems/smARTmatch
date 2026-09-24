@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from threading import Event
 from unittest.mock import patch
+
+from shared.image_storage_lock import image_storage_lock
 
 from scrapers.scheduler import (
     BatchProcessManager,
@@ -10,6 +14,7 @@ from scrapers.scheduler import (
     load_config,
     next_trigger_after,
     parse_interval,
+    run_interval_cleanup,
     run_scheduler,
 )
 
@@ -45,11 +50,11 @@ class SchedulerTests(unittest.TestCase):
 
     def test_initial_scheduler_trigger_runs_immediately(self) -> None:
         stop_event = Event()
-        sources = []
+        events = []
 
         class Manager:
             def launch(self, source: str) -> int:
-                sources.append(source)
+                events.append(source)
                 stop_event.set()
                 return 123
 
@@ -61,10 +66,109 @@ class SchedulerTests(unittest.TestCase):
             stop_event,
             manager=Manager(),
             monotonic=lambda: 100.0,
+            cleanup=lambda: events.append("cleanup"),
+        )
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(events, ["cleanup", "startup"])
+
+    def test_interval_cleanup_failure_still_starts_the_batch(self) -> None:
+        stop_event = Event()
+        sources = []
+
+        class Manager:
+            def launch(self, source: str) -> int:
+                sources.append(source)
+                stop_event.set()
+                return 123
+
+            def reap_finished(self) -> None:
+                return None
+
+        def fail_cleanup() -> None:
+            raise RuntimeError("image store is busy")
+
+        return_code = run_scheduler(
+            SchedulerConfig(interval_seconds=86_400),
+            stop_event,
+            manager=Manager(),
+            monotonic=lambda: 100.0,
+            cleanup=fail_cleanup,
         )
 
         self.assertEqual(return_code, 0)
         self.assertEqual(sources, ["startup"])
+
+    def test_default_interval_cleanup_runs_apply_before_the_batch(self) -> None:
+        stop_event = Event()
+        launched = []
+
+        class Manager:
+            def launch(self, source: str) -> int:
+                launched.append(source)
+                stop_event.set()
+                return 1
+
+            def reap_finished(self) -> None:
+                return None
+
+        class Completed:
+            returncode = 0
+
+        with patch("scrapers.scheduler.subprocess.run", return_value=Completed()) as run:
+            return_code = run_scheduler(
+                SchedulerConfig(interval_seconds=86_400),
+                stop_event,
+                manager=Manager(),
+                monotonic=lambda: 100.0,
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(launched, ["startup"])
+        command = run.call_args.args[0]
+        self.assertEqual(
+            command[-3:],
+            ["-m", "scrapers.image_cleanup", "--apply"],
+        )
+        self.assertEqual(run.call_args.kwargs["check"], False)
+
+    def test_interval_cleanup_continues_after_nonzero_exit_or_start_failure(self) -> None:
+        class Completed:
+            returncode = 1
+
+        with patch("scrapers.scheduler.subprocess.run", return_value=Completed()):
+            run_interval_cleanup()
+
+        with patch(
+            "scrapers.scheduler.subprocess.run",
+            side_effect=OSError("cleanup missing"),
+        ):
+            run_interval_cleanup()
+
+    def test_interval_cleanup_skips_when_image_store_lock_is_held(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir) / "images"
+            log_dir = Path(tmp_dir) / "logs"
+            root.mkdir()
+            log_dir.mkdir()
+            kept = root / "keep.jpg"
+            kept.write_bytes(b"keep")
+            env = {
+                "SMARTMATCH_IMAGES_DIR": str(root),
+                "SMARTMATCH_LOG_LEVEL": "ALL",
+                "SMARTMATCH_LOG_DIR": str(log_dir),
+                "SMARTMATCH_CONTAINER_NAME": "scrapers-test",
+            }
+            with image_storage_lock(root, exclusive=False), patch.dict(
+                "os.environ", env, clear=False
+            ):
+                run_interval_cleanup()
+
+            self.assertEqual(kept.read_bytes(), b"keep")
+            log_text = "\n".join(
+                path.read_text() for path in log_dir.glob("scrapers-test_*.txt")
+            )
+            self.assertIn("image store is being written", log_text)
 
     def test_batch_manager_does_not_block_later_interval_submissions(self) -> None:
         processes = []

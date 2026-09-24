@@ -9,8 +9,8 @@ from unittest import mock
 
 import pytest
 
-from matching_pipeline.image_cleanup import __main__ as entrypoint
-from matching_pipeline.image_cleanup import cleanup
+from scrapers.image_cleanup import __main__ as entrypoint
+from scrapers.image_cleanup import cleanup
 from shared.image_storage_lock import image_storage_lock
 
 
@@ -48,8 +48,10 @@ class _Cursor:
     def fetchone(self):
         if "pg_try_advisory_xact_lock" in self._last_sql:
             return (self.lock_acquired,)
-        assert "FROM scraper_run" in self._last_sql
-        return (self.active_scraper,)
+        if "FROM scraper_run" in self._last_sql:
+            return (self.active_scraper,)
+        assert "cleanup_candidate_preflight" in self._last_sql
+        return (any(bool(row[2]) for row in self.rows),)
 
     def fetchall(self):
         if "cleaned_up_at IS NOT NULL" in self._last_sql:
@@ -775,6 +777,29 @@ def test_apply_skips_before_inventory_when_a_tracked_scraper_is_running():
         assert not any("WITH eligible_artwork" in sql for sql, _params in cursor.execute_calls)
 
 
+def test_no_live_candidate_skips_filesystem_inventory():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        root = Path(tmp_dir)
+        kept = root / "kept.jpg"
+        kept.write_bytes(b"keep")
+        cursor = _Cursor([_row(1, kept, lost=True)])
+        connection = _Connection(cursor)
+
+        with mock.patch.object(cleanup, "connect_db", return_value=connection):
+            result = cleanup.cleanup_unmatched_auction_images(image_root=root, apply=True)
+
+        assert result.deleted_target_count == 0
+        assert result.inventory_row_count == 0
+        assert connection.rollback_count == 1
+        assert connection.commit_count == 0
+        assert any(
+            "cleanup_candidate_preflight" in sql for sql, _params in cursor.execute_calls
+        )
+        assert not any(
+            "AS has_candidate_auction" in sql for sql, _params in cursor.execute_calls
+        )
+
+
 def test_apply_fails_closed_when_advisory_lock_is_held():
     with tempfile.TemporaryDirectory() as tmp_dir:
         root = Path(tmp_dir)
@@ -827,7 +852,7 @@ def test_entrypoint_is_dry_run_by_default_and_apply_errors_are_nonzero():
         setattr(success, field, 0)
 
     with mock.patch.object(entrypoint, "configure_logging"), mock.patch.object(
-        entrypoint, "env_image_root", return_value=Path("/images")
+        entrypoint, "image_root_from_env", return_value=Path("/images")
     ), mock.patch.object(
         entrypoint, "cleanup_unmatched_auction_images", return_value=success
     ) as run:
@@ -845,7 +870,7 @@ def test_entrypoint_is_dry_run_by_default_and_apply_errors_are_nonzero():
 
 def test_entrypoint_treats_active_scraper_as_a_safe_skip():
     with mock.patch.object(entrypoint, "configure_logging"), mock.patch.object(
-        entrypoint, "env_image_root", return_value=Path("/images")
+        entrypoint, "image_root_from_env", return_value=Path("/images")
     ), mock.patch.object(
         entrypoint,
         "cleanup_unmatched_auction_images",
@@ -854,7 +879,7 @@ def test_entrypoint_treats_active_scraper_as_a_safe_skip():
         assert entrypoint.main(["--apply"]) == 0
 
     with mock.patch.object(entrypoint, "configure_logging"), mock.patch.object(
-        entrypoint, "env_image_root", return_value=Path("/images")
+        entrypoint, "image_root_from_env", return_value=Path("/images")
     ), mock.patch.object(
         entrypoint,
         "cleanup_unmatched_auction_images",

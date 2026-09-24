@@ -3,7 +3,7 @@
 `matching_pipeline` contains every deployed matching stage and the shared runtime used by the `matching_pipeline` Compose service.
 
 ```text
-image_blocking -> image_matching -> metadata_extraction/normalization -> metadata_matching -> image_cleanup
+image_blocking -> image_matching -> metadata_extraction/normalization -> metadata_matching
 ```
 
 ## Layout
@@ -15,7 +15,6 @@ image_blocking -> image_matching -> metadata_extraction/normalization -> metadat
 | `metadata_extraction/` | Description selection, LLM extraction, and the extraction/normalization coordinator |
 | `metadata_normalization/` | Artist, dating, dimensions, material, and technique normalization |
 | `metadata_matching/` | Metadata similarity/confidence scoring and persistence |
-| `image_cleanup/` | Physical removal of fully processed unmatched auction images |
 | `shared/` | Database/environment helpers, artifacts, LLM runtime, setup, and reference data |
 | `Dockerfile` | Deployed combined pipeline image |
 | `requirements.txt` | Pinned combined runtime dependencies |
@@ -48,7 +47,6 @@ python -m matching_pipeline.image_blocking --no-compile
 python -m matching_pipeline.image_matching
 python -m matching_pipeline.metadata_extraction
 python -m matching_pipeline.metadata_matching
-python -m matching_pipeline.image_cleanup --apply
 ```
 
 `metadata_extraction` also invokes `metadata_normalization` using the generated JSONL handoff. Each handoff record carries parse status: malformed or unparseable LLM responses remain extraction-pending for a later retry, while a valid expected JSON schema is complete even when all entity values are empty. The normalization package can be run directly for recovery with `python -m matching_pipeline.metadata_normalization` after a valid handoff exists.
@@ -81,7 +79,7 @@ docker compose ps matching_pipeline
 docker inspect --format '{{json .State.Health}}' "$(docker compose ps -q matching_pipeline)"
 ```
 
-See [auction image cleanup](image_cleanup/README.md) for its dry-run command,
+See [auction image cleanup](../scrapers/image_cleanup/README.md) for its dry-run command,
 eligibility rules, direct-deletion safeguards, and legacy-data warning.
 
 ## Optional telemetry service

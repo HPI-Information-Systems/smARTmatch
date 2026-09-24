@@ -84,10 +84,22 @@
                 </section>
             </div>
             <div class="col">
-                <section class="stats-kpi-card h-100">
+                <section class="stats-kpi-card stats-kpi-disk h-100">
+                    <div class="stats-disk-legend" data-project-disk-legend{% if not stats.project_size.scan_ready or not stats.project_size.disk_free_ready %} hidden{% endif %}>
+                        <span><i class="stats-disk-swatch-other"></i>Sonstige <strong data-project-disk-other-label>{{ stats.project_size.disk_other_label }}</strong></span>
+                        <span><i class="stats-disk-swatch-project"></i>smARTmatch <strong data-project-size-label>{{ stats.project_size.size_label }}</strong></span>
+                    </div>
                     <span class="stats-kpi-icon"><i class="bi bi-hdd" aria-hidden="true"></i></span>
                     <p class="stats-kpi-label">Projektgröße</p>
-                    <p class="stats-kpi-value{% if not stats.project_size.scan_ready %} stats-kpi-value-loading{% endif %}" data-project-size-label>{{ stats.project_size.size_label }}</p>
+                    <div class="stats-disk{% if stats.project_size.disk_space_low %} stats-disk-low{% endif %}" data-project-disk>
+                        <div class="stats-bar-track stats-disk-bar"{% if not stats.project_size.scan_ready or not stats.project_size.disk_free_ready %} hidden{% endif %} data-project-disk-track>
+                            <div class="stats-disk-segment stats-disk-segment-other" data-project-disk-other style="flex-grow: {{ stats.project_size.disk_other_bytes or 0 }}"></div>
+                            <div class="stats-disk-segment stats-disk-segment-project" data-project-disk-fill style="flex-grow: {{ stats.project_size.size_bytes or 0 }}"></div>
+                            <div class="stats-disk-segment stats-disk-segment-free" data-project-disk-free style="flex-grow: {{ stats.project_size.disk_free_bytes or 0 }}"></div>
+                        </div>
+                        <p class="stats-disk-free"{% if not stats.project_size.scan_ready or not stats.project_size.disk_free_ready %} hidden{% endif %} data-project-disk-free-line data-project-disk-label>{% if stats.project_size.disk_free_ready %}{{ stats.project_size.disk_free_label }} frei{% endif %}</p>
+                        <p class="stats-kpi-note stats-disk-label stats-kpi-value-loading" data-project-disk-pending{% if stats.project_size.scan_ready and stats.project_size.disk_free_ready %} hidden{% endif %}>Wird berechnet…</p>
+                    </div>
                 </section>
             </div>
         </div>

@@ -25,6 +25,8 @@ _PROJECT_SIZE_CACHE_LOCK = Lock()
 _PROJECT_SIZE_CACHE = {
     "root": None,
     "size_bytes": None,
+    "disk_free_bytes": None,
+    "disk_total_bytes": None,
     "expires_at": 0.0,
     "refreshing": False,
 }
@@ -195,24 +197,80 @@ def _scan_project_directory(root):
     return total_bytes
 
 
-def _project_size_result(size_bytes):
+def _disk_usage(root):
+    try:
+        usage = os.statvfs(root)
+    except OSError:
+        return None, None
+    fragment_size = int(usage.f_frsize)
+    return int(usage.f_bavail) * fragment_size, int(usage.f_blocks) * fragment_size
+
+
+def _disk_occupied_percent(size_bytes, free_bytes):
+    if size_bytes is None or free_bytes is None:
+        return None
+    whole = int(size_bytes) + int(free_bytes)
+    if whole <= 0:
+        return None
+    return min(100, (int(size_bytes) * 100) // whole)
+
+
+def _project_size_result(size_bytes, free_bytes, total_bytes):
+    scan_ready = size_bytes is not None
+    disk_free_ready = free_bytes is not None and total_bytes is not None
+    disk_space_low = bool(
+        scan_ready
+        and disk_free_ready
+        and size_bytes > 0
+        and free_bytes * 10 < size_bytes
+    )
     return {
         "size_bytes": size_bytes or 0,
         "size_label": (
             format_bytes(size_bytes)
-            if size_bytes is not None
+            if scan_ready
             else _UNKNOWN_PROJECT_SIZE_LABEL
         ),
-        "scan_ready": size_bytes is not None,
+        "scan_ready": scan_ready,
+        "disk_free_bytes": free_bytes or 0,
+        "disk_free_label": (
+            format_bytes(free_bytes)
+            if free_bytes is not None
+            else _UNKNOWN_PROJECT_SIZE_LABEL
+        ),
+        "disk_total_bytes": total_bytes or 0,
+        "disk_other_bytes": max(
+            0,
+            int(total_bytes or 0) - int(free_bytes or 0) - int(size_bytes or 0),
+        )
+        if disk_free_ready and scan_ready
+        else 0,
+        "disk_other_label": (
+            format_bytes(
+                max(0, int(total_bytes) - int(free_bytes) - int(size_bytes))
+            )
+            if disk_free_ready and scan_ready
+            else _UNKNOWN_PROJECT_SIZE_LABEL
+        ),
+        "disk_free_ready": disk_free_ready,
+        "disk_occupied_percent": _disk_occupied_percent(size_bytes, free_bytes),
+        "disk_space_low": disk_space_low,
     }
 
 
-def _store_project_size(root, size_bytes, ttl_seconds):
+def _measure_project_disk(root):
+    free_bytes, total_bytes = _disk_usage(root)
+    return _scan_project_directory(root), free_bytes, total_bytes
+
+
+def _store_project_size(root, size_bytes, free_bytes, total_bytes, ttl_seconds):
     with _PROJECT_SIZE_CACHE_LOCK:
         _PROJECT_SIZE_CACHE.update(
             {
                 "root": str(root),
                 "size_bytes": size_bytes,
+                "disk_free_bytes": free_bytes,
+                "disk_total_bytes": total_bytes,
                 "expires_at": time.monotonic() + ttl_seconds,
                 "refreshing": False,
             }
@@ -221,13 +279,13 @@ def _store_project_size(root, size_bytes, ttl_seconds):
 
 def _refresh_project_size(root, ttl_seconds):
     try:
-        size_bytes = _scan_project_directory(root)
+        size_bytes, free_bytes, total_bytes = _measure_project_disk(root)
     except Exception:
         with _PROJECT_SIZE_CACHE_LOCK:
             if _PROJECT_SIZE_CACHE["root"] == str(root):
                 _PROJECT_SIZE_CACHE["refreshing"] = False
         return
-    _store_project_size(root, size_bytes, ttl_seconds)
+    _store_project_size(root, size_bytes, free_bytes, total_bytes, ttl_seconds)
 
 
 def project_directory_metrics(refresh_async=False):
@@ -236,13 +294,15 @@ def project_directory_metrics(refresh_async=False):
     ttl_seconds = _cache_ttl_seconds()
 
     if not refresh_async:
-        size_bytes = _scan_project_directory(root)
-        _store_project_size(root, size_bytes, ttl_seconds)
-        return _project_size_result(size_bytes)
+        size_bytes, free_bytes, total_bytes = _measure_project_disk(root)
+        _store_project_size(root, size_bytes, free_bytes, total_bytes, ttl_seconds)
+        return _project_size_result(size_bytes, free_bytes, total_bytes)
 
     with _PROJECT_SIZE_CACHE_LOCK:
         root_changed = _PROJECT_SIZE_CACHE["root"] != str(root)
         size_bytes = None if root_changed else _PROJECT_SIZE_CACHE["size_bytes"]
+        free_bytes = None if root_changed else _PROJECT_SIZE_CACHE["disk_free_bytes"]
+        total_bytes = None if root_changed else _PROJECT_SIZE_CACHE["disk_total_bytes"]
         stale = root_changed or time.monotonic() >= _PROJECT_SIZE_CACHE["expires_at"]
         should_refresh = stale and not _PROJECT_SIZE_CACHE["refreshing"]
         if should_refresh:
@@ -254,4 +314,4 @@ def project_directory_metrics(refresh_async=False):
             args=(root, ttl_seconds),
             daemon=True,
         ).start()
-    return _project_size_result(size_bytes)
+    return _project_size_result(size_bytes, free_bytes, total_bytes)

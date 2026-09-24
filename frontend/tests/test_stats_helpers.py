@@ -95,6 +95,54 @@ class StatsHelperTests(unittest.TestCase):
         self.assertGreaterEqual(metrics["size_bytes"], 8)
         self.assertTrue(metrics["scan_ready"])
         self.assertNotEqual(metrics["size_label"], "Wird berechnet…")
+        self.assertTrue(metrics["disk_free_ready"])
+        self.assertGreaterEqual(metrics["disk_free_bytes"], 0)
+        self.assertFalse(metrics["disk_space_low"])
+
+    def test_project_disk_space_is_low_below_ten_percent_of_project_size(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "payload.bin").write_bytes(b"x" * 100)
+            low_disk = os.statvfs_result((1, 1, 1000, 100, 0, 0, 0, 0, 0, 255))
+            with patch.dict(os.environ, {"SMARTMATCH_PROJECT_DIR": tmp_dir}):
+                with patch("frontend.stats_storage.os.statvfs", return_value=low_disk):
+                    low = project_directory_metrics()
+            enough_disk = os.statvfs_result((1, 1, 1000, 100, 10_000_000, 0, 0, 0, 0, 255))
+            with patch.dict(os.environ, {"SMARTMATCH_PROJECT_DIR": tmp_dir}):
+                with patch("frontend.stats_storage.os.statvfs", return_value=enough_disk):
+                    enough = project_directory_metrics()
+
+        self.assertTrue(low["disk_space_low"])
+        self.assertEqual(low["disk_free_bytes"], 0)
+        self.assertFalse(enough["disk_space_low"])
+
+    def test_project_disk_metrics_refresh_in_background(self):
+        with stats_storage_module._PROJECT_SIZE_CACHE_LOCK:
+            stats_storage_module._PROJECT_SIZE_CACHE.update(
+                {
+                    "root": None,
+                    "size_bytes": None,
+                    "disk_free_bytes": None,
+                    "disk_total_bytes": None,
+                    "expires_at": 0.0,
+                    "refreshing": False,
+                }
+            )
+
+        with patch("frontend.stats_storage.Thread") as thread_class:
+            metrics = project_directory_metrics(refresh_async=True)
+
+        self.assertEqual(metrics["size_label"], "Wird berechnet…")
+        self.assertEqual(metrics["disk_free_label"], "Wird berechnet…")
+        self.assertFalse(metrics["scan_ready"])
+        self.assertFalse(metrics["disk_free_ready"])
+        self.assertFalse(metrics["disk_space_low"])
+        thread_class.assert_called_once()
+        self.assertEqual(
+            thread_class.call_args.kwargs["target"],
+            stats_storage_module._refresh_project_size,
+        )
+        thread_class.return_value.start.assert_called_once()
 
     def test_image_file_metrics_returns_placeholder_while_refreshing_async(self):
         with stats_storage_module._SCAN_CACHE_LOCK:

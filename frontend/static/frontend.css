@@ -1757,6 +1757,111 @@ button,
   white-space: nowrap;
 }
 
+.stats-kpi-disk .stats-kpi-icon {
+  margin-bottom: 0.7rem;
+}
+
+.stats-disk {
+  position: relative;
+  z-index: 1;
+  margin-top: 0.15rem;
+}
+
+.stats-kpi-disk .stats-disk-legend {
+  position: absolute;
+  top: 1.25rem;
+  right: 1.15rem;
+  z-index: 2;
+  display: grid;
+  justify-items: end;
+  gap: 0.16rem;
+  max-width: 58%;
+  margin: 0;
+  color: #6c757d;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.stats-disk-legend span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.25rem;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.stats-disk-legend strong {
+  color: #212529;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+}
+
+.stats-disk-swatch-project,
+.stats-disk-legend .stats-disk-swatch-project {
+  background: #e5532f;
+}
+
+.stats-disk-swatch-other,
+.stats-disk-legend .stats-disk-swatch-other {
+  background: #002851;
+}
+
+.stats-disk-swatch-free,
+.stats-disk-legend .stats-disk-swatch-free {
+  background: #9aa6b2;
+}
+
+.stats-disk-bar {
+  display: flex;
+  height: 0.45rem;
+  background: #d5dde6;
+}
+
+.stats-disk-legend i {
+  width: 0.45rem;
+  height: 0.45rem;
+  display: block;
+}
+
+.stats-disk-segment {
+  height: 100%;
+  flex-basis: 0;
+  min-width: 0;
+}
+
+.stats-disk-segment-project {
+  background: #e5532f;
+}
+
+.stats-disk-segment-other {
+  background: #002851;
+}
+
+.stats-disk-segment-free {
+  background: #9aa6b2;
+}
+
+.stats-disk-free {
+  margin: 0.7rem 0 0;
+  color: #212529;
+  font-size: 1.85rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.stats-disk-label {
+  margin: 0;
+  font-weight: 700;
+}
+
+.stats-disk-low .stats-disk-segment-free,
+.stats-disk-low .stats-disk-swatch-free {
+  background: #e74c3c;
+}
+
 .stats-chart-legend {
   display: flex;
   flex-wrap: wrap;

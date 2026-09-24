@@ -258,6 +258,143 @@
     window.setTimeout(() => toast.remove(), 220);
   }
 
+  function showDiskSpaceToast(freeLabel) {
+    const container = document.querySelector(".system-toast-container");
+    if (!container || container.querySelector("[data-disk-space-toast]")) return;
+
+    const toast = document.createElement("div");
+    toast.className = "system-toast system-toast-error";
+    toast.dataset.diskSpaceToast = "1";
+    toast.setAttribute("role", "alert");
+    toast.innerHTML = `
+      <div class="system-toast-icon" aria-hidden="true"><i class="bi bi-hdd-fill"></i></div>
+      <div class="system-toast-content">
+        <strong class="system-toast-title">Speicherplatz knapp</strong>
+        <p class="system-toast-message">Nur noch ${freeLabel} Speicherplatz sind auf diesem Datenträger verfügbar. Bitte kontaktieren Sie den Administrator.</p>
+      </div>
+      <button class="system-toast-close" type="button" aria-label="Benachrichtigung schließen">×</button>
+      <div class="system-toast-progress" aria-hidden="true"></div>
+    `;
+    toast.querySelector(".system-toast-close").addEventListener("click", () => dismissSystemToast(toast));
+    container.appendChild(toast);
+    window.setTimeout(() => dismissSystemToast(toast), 10000);
+  }
+
+  function wholeDiskLabel(label) {
+    return String(label || "").replace(/[.,]\d+/, "");
+  }
+
+  function formatDiskBytes(byteCount) {
+    let size = Number(byteCount) || 0;
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let unit = units[0];
+    for (let index = 0; index < units.length; index += 1) {
+      unit = units[index];
+      if (size < 1024 || unit === "TB") break;
+      size /= 1024;
+    }
+    const precision = unit === "B" ? 0 : 1;
+    return `${size.toFixed(precision).replace(".0", "")} ${unit}`;
+  }
+
+  function ensureProjectDiskMarkup(disk) {
+    const card = disk.closest(".stats-kpi-card");
+    card?.classList.add("stats-kpi-disk");
+    const existingLegend = (card || disk).querySelector("[data-project-disk-legend]");
+    const legendOrderReady = existingLegend?.firstElementChild?.querySelector(".stats-disk-swatch-other")
+      && !existingLegend.querySelector(".stats-disk-swatch-free");
+    if (!existingLegend || existingLegend.classList.contains("stats-chart-legend") || !legendOrderReady) {
+      existingLegend?.remove();
+      const legend = document.createElement("div");
+      legend.className = "stats-disk-legend";
+      legend.dataset.projectDiskLegend = "";
+      legend.innerHTML = `
+        <span><i class="stats-disk-swatch-other"></i>Sonstige <strong data-project-disk-other-label></strong></span>
+        <span><i class="stats-disk-swatch-project"></i>smARTmatch <strong data-project-size-label></strong></span>
+      `;
+      if (card) card.prepend(legend);
+      else disk.prepend(legend);
+    }
+    const legend = (card || disk).querySelector("[data-project-disk-legend]");
+    if (card && legend && legend.parentElement !== card) {
+      card.prepend(legend);
+    }
+    const track = disk.querySelector("[data-project-disk-track]");
+    if (track && track.firstElementChild?.dataset.projectDiskOther !== "") {
+      track.classList.add("stats-disk-bar");
+      track.innerHTML = `
+        <div class="stats-disk-segment stats-disk-segment-other" data-project-disk-other></div>
+        <div class="stats-disk-segment stats-disk-segment-project" data-project-disk-fill></div>
+        <div class="stats-disk-segment stats-disk-segment-free" data-project-disk-free></div>
+      `;
+    }
+    disk.querySelectorAll(".stats-disk-caption").forEach((caption) => {
+      caption.hidden = true;
+    });
+    const existingFreeLine = disk.querySelector("[data-project-disk-free-line]");
+    if (existingFreeLine?.querySelector("i, span, strong")) {
+      existingFreeLine.replaceChildren();
+      existingFreeLine.dataset.projectDiskLabel = "";
+    }
+    if (track && !disk.querySelector("[data-project-disk-free-line]")) {
+      const freeLine = document.createElement("p");
+      freeLine.className = "stats-disk-free";
+      freeLine.dataset.projectDiskFreeLine = "";
+      freeLine.dataset.projectDiskLabel = "";
+      track.insertAdjacentElement("afterend", freeLine);
+    }
+    disk.querySelectorAll("[data-project-size-label], [data-project-disk-label]").forEach((label) => {
+      if (!label.closest("[data-project-disk-legend]") && !label.closest("[data-project-disk-free-line]")) label.hidden = true;
+    });
+    if (!disk.querySelector("[data-project-disk-pending]")) {
+      const pending = document.createElement("p");
+      pending.className = "stats-kpi-note stats-disk-label stats-kpi-value-loading";
+      pending.dataset.projectDiskPending = "";
+      pending.textContent = "Wird berechnet…";
+      disk.appendChild(pending);
+    }
+  }
+
+  function updateProjectDisk(projectSize) {
+    document.querySelectorAll("[data-project-disk]").forEach(ensureProjectDiskMarkup);
+    const ready = Boolean(projectSize.scan_ready && projectSize.disk_free_ready);
+    const projectBytes = Math.max(0, Number(projectSize.size_bytes) || 0);
+    const freeBytes = Math.max(0, Number(projectSize.disk_free_bytes) || 0);
+    const totalBytes = Math.max(0, Number(projectSize.disk_total_bytes) || 0);
+    const otherBytes = ready ? Math.max(0, totalBytes - freeBytes - projectBytes) : 0;
+    document.querySelectorAll("[data-project-disk]").forEach((disk) => {
+      disk.classList.toggle("stats-disk-low", ready && Boolean(projectSize.disk_space_low));
+    });
+    document.querySelectorAll("[data-project-disk-legend], [data-project-disk-free-line]").forEach((legend) => {
+      legend.hidden = !ready;
+    });
+    document.querySelectorAll("[data-project-disk-pending]").forEach((pending) => {
+      pending.hidden = ready;
+    });
+    document.querySelectorAll("[data-project-size-label]").forEach((label) => {
+      label.textContent = ready ? wholeDiskLabel(projectSize.size_label || formatDiskBytes(projectBytes)) : "";
+    });
+    document.querySelectorAll("[data-project-disk-other-label]").forEach((label) => {
+      label.textContent = ready ? wholeDiskLabel(projectSize.disk_other_label || formatDiskBytes(otherBytes)) : "";
+    });
+    document.querySelectorAll("[data-project-disk-label]").forEach((label) => {
+      const freeLabel = projectSize.disk_free_label || formatDiskBytes(freeBytes);
+      label.textContent = ready ? `${freeLabel} frei` : "";
+    });
+    document.querySelectorAll("[data-project-disk-track]").forEach((track) => {
+      track.hidden = !ready;
+    });
+    document.querySelectorAll("[data-project-disk-fill]").forEach((segment) => {
+      segment.style.flexGrow = String(projectBytes);
+    });
+    document.querySelectorAll("[data-project-disk-other]").forEach((segment) => {
+      segment.style.flexGrow = String(otherBytes);
+    });
+    document.querySelectorAll("[data-project-disk-free]").forEach((segment) => {
+      segment.style.flexGrow = String(freeBytes);
+    });
+  }
+
   function showMissingFilesToast(missingLabel) {
     const container = document.querySelector(".system-toast-container");
     if (!container || container.querySelector("[data-missing-files-toast]")) return;
@@ -293,18 +430,20 @@
       const payload = await response.json();
       const imageFiles = payload && payload.image_files;
       const projectSize = payload && payload.project_size;
-      if (projectSize && projectSize.scan_ready) {
-        document.querySelectorAll("[data-project-size-label]").forEach((label) => {
-          label.textContent = projectSize.size_label;
-          label.classList.remove("stats-kpi-value-loading");
-        });
+      if (projectSize) {
+        updateProjectDisk(projectSize);
+      }
+      if (projectSize && projectSize.scan_ready && projectSize.disk_space_low) {
+        showDiskSpaceToast(projectSize.disk_free_label);
       }
       if (imageFiles && imageFiles.scan_ready && Number(imageFiles.missing_count) > 0) {
         showMissingFilesToast(imageFiles.missing_label);
       }
+      const projectPending = !projectSize || !projectSize.scan_ready || !projectSize.disk_free_ready;
+      const imagesPending = !imageFiles || !imageFiles.scan_ready;
       if (
-        (!imageFiles || !imageFiles.scan_ready || !projectSize || !projectSize.scan_ready) &&
-        attempt < SYSTEM_STATUS_MAX_ATTEMPTS
+        (projectPending && attempt < 600) ||
+        (imagesPending && attempt < SYSTEM_STATUS_MAX_ATTEMPTS)
       ) {
         window.setTimeout(() => loadSystemStatus(attempt + 1), SYSTEM_STATUS_POLL_INTERVAL_MS);
       }
